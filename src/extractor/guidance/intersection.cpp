@@ -85,7 +85,6 @@ Intersection::Base::const_iterator Intersection::findClosestTurn(double angle) c
                    util::guidance::angularDeviation(rhs.angle, angle);
         });
 }
-
 bool Intersection::valid() const
 {
     return !empty() &&
@@ -112,6 +111,23 @@ Intersection::getHighestConnectedLaneCount(const util::NodeBasedDynamicGraph &gr
     const auto view = *this | boost::adaptors::transformed(to_lane_count);
     boost::range::find_if(view, extract_maximal_value);
     return max_lanes;
+}
+
+// check if all entries in the given range allow entry
+bool Intersection::hasValidEntries(std::size_t first, std::size_t last) const
+{
+    BOOST_ASSERT(last < size());
+
+    for (std::size_t i = first; i <= last; ++i)
+    {
+        if (!operator[](i).entry_allowed)
+        {
+            return false;
+        }
+    }
+    // if no entry was found that forbids entry, the intersection entries in the range are all
+    // valid.
+    return true;
 }
 
 } // namespace guidance

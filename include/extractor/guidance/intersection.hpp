@@ -19,6 +19,11 @@ namespace guidance
 // Every Turn Operation describes a way of switching onto a segment, indicated by an EdgeID. The
 // associated turn is described by an angle and an instruction that is used to announce it.
 // The Turn Operation indicates what is exposed to the outside of the turn analysis.
+//
+// `angle`      is given counter-clockwise:
+//              0 = uturn, 90 = right, 180 = straight, 270 = left
+// `bearing`    is the direction in clockwise angle from true north after taking the turn:
+//              0 = heading north, 90 = east, 180 = south, 270 = west<<<<<<< HEAD
 struct TurnOperation
 {
     EdgeID eid;
@@ -71,6 +76,9 @@ struct ConnectedRoad final : public TurnOperation
 // small helper function to print the content of a connected road
 std::string toString(const ConnectedRoad &road);
 
+// `Intersection` is a relative view of an intersection by an incoming edge.
+// `Intersection` are streets at an intersection ordered from from sharp right counter-clockwise to
+// sharp left where `intersection[0]` is _always_ a u-turn
 struct Intersection final : public std::vector<ConnectedRoad>
 {
     using Base = std::vector<ConnectedRoad>;
@@ -93,6 +101,9 @@ struct Intersection final : public std::vector<ConnectedRoad>
     // given all possible turns, which is the highest connected number of lanes per turn. This value
     // is used, for example, during generation of intersections.
     std::uint8_t getHighestConnectedLaneCount(const util::NodeBasedDynamicGraph &) const;
+
+    // check if all roads between first and last allow entry
+    bool hasValidEntries(std::size_t first, std::size_t last) const;
 };
 
 Intersection::const_iterator findClosestTurn(const Intersection &intersection, const double angle);

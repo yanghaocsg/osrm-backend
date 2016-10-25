@@ -45,6 +45,8 @@ std::size_t IntersectionHandler::countValid(const Intersection &intersection) co
     });
 }
 
+// Checks whether a turn from `via_edge` onto `road` is a turn, on a ramp, a continue, or a normal
+// turn
 TurnType::Enum IntersectionHandler::findBasicTurnType(const EdgeID via_edge,
                                                       const ConnectedRoad &road) const
 {

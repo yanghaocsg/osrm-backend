@@ -35,10 +35,34 @@ class IntersectionHandler
     virtual ~IntersectionHandler() = default;
 
     // check whether the handler can actually handle the intersection
+    //
+    // note that `intersection` is a ordered list of connected roads ordered from from sharp right
+    // counter-clockwise to sharp left where `intersection[0]` is always a u-turn
+    // #IntersectionExplanation@intersection_handler.hpp
+    //
+    //                                           |
+    //                                           |
+    //                                     (intersec[3])
+    //                                           |
+    //                                           |
+    //                                           |
+    //  nid ---(via_eid/intersec[0])--- nbg.GetTarget(via)  ---(intersec[2])---
+    //                                           |
+    //                                           |
+    //                                           |
+    //                                     (intersec[1])
+    //                                           |
+    //                                           |
+    //
+    // intersec := intersection
+    // nbh := node_based_graph
+    //
+    // #IntersectionExplanation@intersection_handler.hpp
     virtual bool
     canProcess(const NodeID nid, const EdgeID via_eid, const Intersection &intersection) const = 0;
 
-    // process the intersection
+    // handle and process the intersection with parameters as described in
+    // #IntersectionExplanation@intersection_handler.hpp
     virtual Intersection
     operator()(const NodeID nid, const EdgeID via_eid, Intersection intersection) const = 0;
 
@@ -59,6 +83,8 @@ class IntersectionHandler
     // determining whether there is a road that can be seen as obvious turn in the presence of many
     // other possible turns. The function will consider road categories and other inputs like the
     // turn angles.
+    // Input parameters describe an intersection as described in
+    // #IntersectionExplanation@intersection_handler.hpp
     std::size_t findObviousTurn(const EdgeID via_edge, const Intersection &intersection) const;
 
     // Obvious turns can still take multiple forms. This function looks at the turn onto a road
