@@ -308,8 +308,30 @@ if(WIN32 AND CMAKE_BUILD_TYPE MATCHES Debug)
   set(TBB_LIBRARIES ${TBB_DEBUG_LIBRARIES})
 endif()
 
-find_package(Luabind REQUIRED)
-add_dependency_includes(${LUABIND_INCLUDE_DIR})
+FIND_PACKAGE(Lua 5.2 EXACT)
+IF (LUA_FOUND)
+    MESSAGE(STATUS "Using Lua ${LUA_VERSION_STRING}")
+ELSE()
+  FIND_PACKAGE(Lua 5.1 EXACT)
+  IF (LUA_FOUND)
+    MESSAGE(STATUS "Using Lua ${LUA_VERSION_STRING}")
+  ELSE()
+    # Now fall back to a lua verison without exact
+    # in case this cmake version also forces patch versions
+    FIND_PACKAGE(Lua 5.2)
+    IF (LUA_FOUND)
+        MESSAGE(STATUS "Using Lua ${LUA_VERSION_STRING}")
+    ELSE()
+      FIND_PACKAGE(Lua 5.1)
+      IF (LUA_FOUND)
+        MESSAGE(STATUS "Using Lua ${LUA_VERSION_STRING}")
+      ELSE()
+        MESSAGE(FATAL_ERROR "Lua 5.1 or 5.2 was not found.")
+      ENDIF()
+    ENDIF()
+  ENDIF()
+ENDIF()
+
 set(USED_LUA_LIBRARIES ${LUA_LIBRARY})
 add_dependency_includes(${LUA_INCLUDE_DIR})
 
@@ -361,7 +383,6 @@ set(EXTRACTOR_LIBRARIES
     ${BOOST_BASE_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
     ${EXPAT_LIBRARIES}
-    ${LUABIND_LIBRARY}
     ${USED_LUA_LIBRARIES}
     ${OSMIUM_LIBRARIES}
     ${STXXL_LIBRARY}
@@ -371,7 +392,6 @@ set(EXTRACTOR_LIBRARIES
 set(CONTRACTOR_LIBRARIES
     ${BOOST_BASE_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
-    ${LUABIND_LIBRARY}
     ${USED_LUA_LIBRARIES}
     ${STXXL_LIBRARY}
     ${TBB_LIBRARIES}
