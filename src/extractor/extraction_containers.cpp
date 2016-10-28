@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <limits>
+#include <mutex>
 
 namespace
 {
@@ -67,10 +68,13 @@ struct CmpEdgeByInternalSourceTargetAndName
         if (lhs.result.source != rhs.result.source)
             return lhs.result.source < rhs.result.source;
 
+        if (lhs.result.source == SPECIAL_NODEID)
+            return false;
+
         if (lhs.result.target != rhs.result.target)
             return lhs.result.target < rhs.result.target;
 
-        if (lhs.result.source == SPECIAL_NODEID)
+        if (lhs.result.target == SPECIAL_NODEID)
             return false;
 
         if (lhs.result.name_id == rhs.result.name_id)
@@ -82,6 +86,7 @@ struct CmpEdgeByInternalSourceTargetAndName
         if (rhs.result.name_id == EMPTY_NAMEID)
             return true;
 
+        std::lock_guard<std::mutex> lock(mutex);
         BOOST_ASSERT(!name_offsets.empty() && name_offsets.back() == name_data.size());
         const oe::ExtractionContainers::STXXLNameCharData::const_iterator data = name_data.begin();
         return std::lexicographical_compare(data + name_offsets[lhs.result.name_id],
@@ -93,10 +98,10 @@ struct CmpEdgeByInternalSourceTargetAndName
     value_type max_value() { return value_type::max_internal_value(); }
     value_type min_value() { return value_type::min_internal_value(); }
 
+    std::mutex& mutex;
     const oe::ExtractionContainers::STXXLNameCharData &name_data;
     const oe::ExtractionContainers::STXXLNameOffsets &name_offsets;
 };
-
 }
 
 namespace osrm
@@ -111,17 +116,13 @@ ExtractionContainers::ExtractionContainers()
     // Check if stxxl can be instantiated
     stxxl::vector<unsigned> dummy_vector;
 
-    // Insert three empty strings offsets for name, destination and pronunciation
+    // Insert four empty strings offsets for name, ref, destination and pronunciation
+    name_offsets.push_back(0);
     name_offsets.push_back(0);
     name_offsets.push_back(0);
     name_offsets.push_back(0);
     // Insert the total length sentinel (corresponds to the next name string offset)
     name_offsets.push_back(0);
-
-    // the offsets have to be initialized with two values, since we have the empty turn string for
-    // the first id
-    turn_lane_offsets.push_back(0);
-    turn_lane_offsets.push_back(0);
 }
 
 /**
@@ -137,57 +138,21 @@ ExtractionContainers::ExtractionContainers()
 void ExtractionContainers::PrepareData(ScriptingEnvironment &scripting_environment,
                                        const std::string &output_file_name,
                                        const std::string &restrictions_file_name,
-                                       const std::string &name_file_name,
-                                       const std::string &turn_lane_file_name)
+                                       const std::string &name_file_name)
 {
-    try
-    {
-        std::ofstream file_out_stream;
-        file_out_stream.open(output_file_name.c_str(), std::ios::binary);
-        const util::FingerPrint fingerprint = util::FingerPrint::GetValid();
-        file_out_stream.write((char *)&fingerprint, sizeof(util::FingerPrint));
+    std::ofstream file_out_stream;
+    file_out_stream.open(output_file_name.c_str(), std::ios::binary);
+    const util::FingerPrint fingerprint = util::FingerPrint::GetValid();
+    file_out_stream.write((char *)&fingerprint, sizeof(util::FingerPrint));
 
-        PrepareNodes();
-        WriteNodes(file_out_stream);
-        PrepareEdges(scripting_environment);
-        WriteEdges(file_out_stream);
+    PrepareNodes();
+    WriteNodes(file_out_stream);
+    PrepareEdges(scripting_environment);
+    WriteEdges(file_out_stream);
 
-        PrepareRestrictions();
-        WriteRestrictions(restrictions_file_name);
-
-        WriteCharData(name_file_name);
-        WriteTurnLaneMasks(turn_lane_file_name, turn_lane_offsets, turn_lane_masks);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Caught Execption:" << e.what() << std::endl;
-    }
-}
-
-void ExtractionContainers::WriteTurnLaneMasks(
-    const std::string &file_name,
-    const stxxl::vector<std::uint32_t> &offsets,
-    const stxxl::vector<guidance::TurnLaneType::Mask> &masks) const
-{
-    util::SimpleLogger().Write() << "Writing turn lane masks...";
-    TIMER_START(turn_lane_timer);
-
-    std::ofstream ofs(file_name, std::ios::binary);
-
-    if (!util::serializeVector(ofs, offsets))
-    {
-        util::SimpleLogger().Write(logWARNING) << "Error while writing.";
-        return;
-    }
-
-    if (!util::serializeVector(ofs, masks))
-    {
-        util::SimpleLogger().Write(logWARNING) << "Error while writing.";
-        return;
-    }
-
-    TIMER_STOP(turn_lane_timer);
-    util::SimpleLogger().Write() << "done (" << TIMER_SEC(turn_lane_timer) << ")";
+    PrepareRestrictions();
+    WriteRestrictions(restrictions_file_name);
+    WriteCharData(name_file_name);
 }
 
 void ExtractionContainers::WriteCharData(const std::string &file_name)
@@ -199,7 +164,8 @@ void ExtractionContainers::WriteCharData(const std::string &file_name)
     // transforms in-place name offsets to name lengths
     BOOST_ASSERT(!name_offsets.empty());
     for (auto curr = name_offsets.begin(), next = name_offsets.begin() + 1;
-         next != name_offsets.end(); ++curr, ++next)
+         next != name_offsets.end();
+         ++curr, ++next)
     {
         *curr = *next - *curr;
     }
@@ -323,8 +289,8 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
     {
         if (edge_iterator->result.osm_source_id < node_iterator->node_id)
         {
-            util::SimpleLogger().Write(LogLevel::logWARNING) << "Found invalid node reference "
-                                                             << edge_iterator->result.source;
+            util::SimpleLogger().Write(LogLevel::logDEBUG) << "Found invalid node reference "
+                                                           << edge_iterator->result.source;
             edge_iterator->result.source = SPECIAL_NODEID;
             ++edge_iterator;
             continue;
@@ -359,8 +325,8 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
     // Remove all remaining edges. They are invalid because there are no corresponding nodes for
     // them. This happens when using osmosis with bbox or polygon to extract smaller areas.
     auto markSourcesInvalid = [](InternalExtractorEdge &edge) {
-        util::SimpleLogger().Write(LogLevel::logWARNING) << "Found invalid node reference "
-                                                         << edge.result.source;
+        util::SimpleLogger().Write(LogLevel::logDEBUG) << "Found invalid node reference "
+                                                       << edge.result.source;
         edge.result.source = SPECIAL_NODEID;
         edge.result.osm_source_id = SPECIAL_OSM_NODEID;
     };
@@ -394,7 +360,7 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
 
         if (edge_iterator->result.osm_target_id < node_iterator->node_id)
         {
-            util::SimpleLogger().Write(LogLevel::logWARNING)
+            util::SimpleLogger().Write(LogLevel::logDEBUG)
                 << "Found invalid node reference "
                 << static_cast<uint64_t>(edge_iterator->result.osm_target_id);
             edge_iterator->result.target = SPECIAL_NODEID;
@@ -462,8 +428,8 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
     // Remove all remaining edges. They are invalid because there are no corresponding nodes for
     // them. This happens when using osmosis with bbox or polygon to extract smaller areas.
     auto markTargetsInvalid = [](InternalExtractorEdge &edge) {
-        util::SimpleLogger().Write(LogLevel::logWARNING) << "Found invalid node reference "
-                                                         << edge.result.target;
+        util::SimpleLogger().Write(LogLevel::logDEBUG) << "Found invalid node reference "
+                                                       << edge.result.target;
         edge.result.target = SPECIAL_NODEID;
     };
     std::for_each(edge_iterator, all_edges_list_end_, markTargetsInvalid);
@@ -473,9 +439,10 @@ void ExtractionContainers::PrepareEdges(ScriptingEnvironment &scripting_environm
     // Sort edges by start.
     std::cout << "[extractor] Sorting edges by renumbered start ... " << std::flush;
     TIMER_START(sort_edges_by_renumbered_start);
+    std::mutex name_data_mutex;
     stxxl::sort(all_edges_list.begin(),
                 all_edges_list.end(),
-                CmpEdgeByInternalSourceTargetAndName{name_char_data, name_offsets},
+                CmpEdgeByInternalSourceTargetAndName{name_data_mutex, name_char_data, name_offsets},
                 stxxl_memory);
     TIMER_STOP(sort_edges_by_renumbered_start);
     std::cout << "ok, after " << TIMER_SEC(sort_edges_by_renumbered_start) << "s" << std::endl;
@@ -722,7 +689,7 @@ void ExtractionContainers::PrepareRestrictions()
         if (way_start_and_end_iterator->way_id >
             OSMWayID{static_cast<std::uint32_t>(restrictions_iterator->restriction.from.way)})
         {
-            util::SimpleLogger().Write(LogLevel::logWARNING)
+            util::SimpleLogger().Write(LogLevel::logDEBUG)
                 << "Restriction references invalid way: "
                 << restrictions_iterator->restriction.from.way;
             restrictions_iterator->restriction.from.node = SPECIAL_NODEID;
@@ -730,8 +697,9 @@ void ExtractionContainers::PrepareRestrictions()
             continue;
         }
 
-        BOOST_ASSERT(way_start_and_end_iterator->way_id ==
-                     OSMWayID{static_cast<std::uint32_t>(restrictions_iterator->restriction.from.way)});
+        BOOST_ASSERT(
+            way_start_and_end_iterator->way_id ==
+            OSMWayID{static_cast<std::uint32_t>(restrictions_iterator->restriction.from.way)});
         // we do not remap the via id yet, since we will need it for the to node as well
         const OSMNodeID via_node_id = OSMNodeID{restrictions_iterator->restriction.via.node};
 
@@ -739,7 +707,7 @@ void ExtractionContainers::PrepareRestrictions()
         auto via_id_iter = external_to_internal_node_id_map.find(via_node_id);
         if (via_id_iter == external_to_internal_node_id_map.end())
         {
-            util::SimpleLogger().Write(LogLevel::logWARNING)
+            util::SimpleLogger().Write(LogLevel::logDEBUG)
                 << "Restriction references invalid node: "
                 << restrictions_iterator->restriction.via.node;
             restrictions_iterator->restriction.via.node = SPECIAL_NODEID;
@@ -754,7 +722,7 @@ void ExtractionContainers::PrepareRestrictions()
                 way_start_and_end_iterator->first_segment_target_id);
             if (id_iter == external_to_internal_node_id_map.end())
             {
-                util::SimpleLogger().Write(LogLevel::logWARNING)
+                util::SimpleLogger().Write(LogLevel::logDEBUG)
                     << "Way references invalid node: "
                     << way_start_and_end_iterator->first_segment_target_id;
                 restrictions_iterator->restriction.from.node = SPECIAL_NODEID;
@@ -771,7 +739,7 @@ void ExtractionContainers::PrepareRestrictions()
                 way_start_and_end_iterator->last_segment_source_id);
             if (id_iter == external_to_internal_node_id_map.end())
             {
-                util::SimpleLogger().Write(LogLevel::logWARNING)
+                util::SimpleLogger().Write(LogLevel::logDEBUG)
                     << "Way references invalid node: "
                     << way_start_and_end_iterator->last_segment_target_id;
                 restrictions_iterator->restriction.from.node = SPECIAL_NODEID;
@@ -828,8 +796,9 @@ void ExtractionContainers::PrepareRestrictions()
             ++restrictions_iterator;
             continue;
         }
-        BOOST_ASSERT(way_start_and_end_iterator->way_id ==
-                     OSMWayID{static_cast<std::uint32_t>(restrictions_iterator->restriction.to.way)});
+        BOOST_ASSERT(
+            way_start_and_end_iterator->way_id ==
+            OSMWayID{static_cast<std::uint32_t>(restrictions_iterator->restriction.to.way)});
         const OSMNodeID via_node_id = OSMNodeID{restrictions_iterator->restriction.via.node};
 
         // assign new via node id
@@ -843,7 +812,7 @@ void ExtractionContainers::PrepareRestrictions()
                 way_start_and_end_iterator->first_segment_target_id);
             if (to_id_iter == external_to_internal_node_id_map.end())
             {
-                util::SimpleLogger().Write(LogLevel::logWARNING)
+                util::SimpleLogger().Write(LogLevel::logDEBUG)
                     << "Way references invalid node: "
                     << way_start_and_end_iterator->first_segment_source_id;
                 restrictions_iterator->restriction.to.node = SPECIAL_NODEID;
@@ -859,7 +828,7 @@ void ExtractionContainers::PrepareRestrictions()
                 way_start_and_end_iterator->last_segment_source_id);
             if (to_id_iter == external_to_internal_node_id_map.end())
             {
-                util::SimpleLogger().Write(LogLevel::logWARNING)
+                util::SimpleLogger().Write(LogLevel::logDEBUG)
                     << "Way references invalid node: "
                     << way_start_and_end_iterator->last_segment_source_id;
                 restrictions_iterator->restriction.to.node = SPECIAL_NODEID;

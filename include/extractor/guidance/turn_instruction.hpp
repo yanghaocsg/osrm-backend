@@ -6,7 +6,6 @@
 #include <boost/assert.hpp>
 
 #include "extractor/guidance/roundabout_type.hpp"
-#include "util/guidance/turn_lanes.hpp"
 #include "util/typedefs.hpp"
 
 namespace osrm
@@ -15,12 +14,6 @@ namespace extractor
 {
 namespace guidance
 {
-
-namespace detail
-{
-// inclusive bounds for turn modifiers
-const constexpr uint8_t num_direction_modifiers = 8;
-} // detail
 
 // direction modifiers based on angle
 namespace DirectionModifier
@@ -34,6 +27,7 @@ const constexpr Enum Straight = 4;
 const constexpr Enum SlightLeft = 5;
 const constexpr Enum Left = 6;
 const constexpr Enum SharpLeft = 7;
+const constexpr Enum MaxDirectionModifier = 8;
 }
 
 namespace TurnType
@@ -70,12 +64,11 @@ const constexpr Enum ExitRoundaboutIntersection = 24; // Exiting a small Roundab
 const constexpr Enum StayOnRoundabout = 25; // Continue on Either a small or a large Roundabout
 const constexpr Enum Sliproad =
     26; // Something that looks like a ramp, but is actually just a small sliproad
+const constexpr Enum MaxTurnType = 27; // Special value for static asserts
 }
 
-// turn angle in 1.40625 degree -> 128 == 180 degree
 struct TurnInstruction
 {
-    using LaneTupel = util::guidance::LaneTupel;
     TurnInstruction(const TurnType::Enum type = TurnType::Invalid,
                     const DirectionModifier::Enum direction_modifier = DirectionModifier::UTurn)
         : type(type), direction_modifier(direction_modifier)

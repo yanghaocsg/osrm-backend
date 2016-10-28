@@ -1,6 +1,6 @@
-#include "extractor/guidance/classification_data.hpp"
-#include "extractor/guidance/constants.hpp"
 #include "extractor/guidance/turn_analysis.hpp"
+#include "extractor/guidance/constants.hpp"
+#include "extractor/guidance/road_classification.hpp"
 
 #include "util/coordinate.hpp"
 #include "util/coordinate_calculation.hpp"
@@ -28,7 +28,7 @@ using EdgeData = util::NodeBasedDynamicGraph::EdgeData;
 
 bool requiresAnnouncement(const EdgeData &from, const EdgeData &to)
 {
-    return !from.IsCompatibleTo(to);
+    return !from.CanCombineWith(to);
 }
 
 TurnAnalysis::TurnAnalysis(const util::NodeBasedDynamicGraph &node_based_graph,
@@ -37,7 +37,8 @@ TurnAnalysis::TurnAnalysis(const util::NodeBasedDynamicGraph &node_based_graph,
                            const std::unordered_set<NodeID> &barrier_nodes,
                            const CompressedEdgeContainer &compressed_edge_container,
                            const util::NameTable &name_table,
-                           const SuffixTable &street_name_suffix_table)
+                           const SuffixTable &street_name_suffix_table,
+                           const ProfileProperties &profile_properties)
     : node_based_graph(node_based_graph), intersection_generator(node_based_graph,
                                                                  restriction_map,
                                                                  barrier_nodes,
@@ -47,9 +48,19 @@ TurnAnalysis::TurnAnalysis(const util::NodeBasedDynamicGraph &node_based_graph,
                          node_info_list,
                          compressed_edge_container,
                          name_table,
-                         street_name_suffix_table),
-      motorway_handler(node_based_graph, node_info_list, name_table, street_name_suffix_table),
-      turn_handler(node_based_graph, node_info_list, name_table, street_name_suffix_table),
+                         street_name_suffix_table,
+                         profile_properties,
+                         intersection_generator),
+      motorway_handler(node_based_graph,
+                       node_info_list,
+                       name_table,
+                       street_name_suffix_table,
+                       intersection_generator),
+      turn_handler(node_based_graph,
+                   node_info_list,
+                   name_table,
+                   street_name_suffix_table,
+                   intersection_generator),
       sliproad_handler(intersection_generator,
                        node_based_graph,
                        node_info_list,
@@ -83,17 +94,17 @@ Intersection TurnAnalysis::assignTurnTypes(const NodeID from_nid,
         }
     }
     // Handle sliproads
-    intersection = sliproad_handler(from_nid, via_eid, std::move(intersection));
+    if (sliproad_handler.canProcess(from_nid, via_eid, intersection))
+        intersection = sliproad_handler(from_nid, via_eid, std::move(intersection));
 
     // Turn On Ramps Into Off Ramps, if we come from a motorway-like road
-    if (isMotorwayClass(node_based_graph.GetEdgeData(via_eid).road_classification.road_class))
+    if (node_based_graph.GetEdgeData(via_eid).road_classification.IsMotorwayClass())
     {
         std::for_each(intersection.begin(), intersection.end(), [](ConnectedRoad &road) {
             if (road.turn.instruction.type == TurnType::OnRamp)
                 road.turn.instruction.type = TurnType::OffRamp;
         });
     }
-
     return intersection;
 }
 

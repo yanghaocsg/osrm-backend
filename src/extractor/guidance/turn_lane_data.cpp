@@ -30,6 +30,7 @@ bool TurnLaneData::operator<(const TurnLaneData &other) const
     if (to > other.to)
         return false;
 
+    // the suppress-assignment flag is ignored, since it does not influence the order
     const constexpr TurnLaneType::Mask tag_by_modifier[] = {TurnLaneType::sharp_right,
                                                             TurnLaneType::right,
                                                             TurnLaneType::slight_right,
@@ -38,14 +39,38 @@ bool TurnLaneData::operator<(const TurnLaneData &other) const
                                                             TurnLaneType::left,
                                                             TurnLaneType::sharp_left,
                                                             TurnLaneType::uturn};
+    // U-Turns are supposed to be on the outside. So if the first lane is 0 and we are looking at a
+    // u-turn, it has to be on the very left. If it is equal to the number of lanes, it has to be on
+    // the right. These sorting function assume reverse to be on the outside always. Might need to
+    // be reconsidered if there are situations that offer a reverse from some middle lane (seems
+    // improbable)
+
+    if (tag == TurnLaneType::uturn)
+    {
+        if (from == 0)
+            return true;
+        else
+            return false;
+    }
+
+    if (other.tag == TurnLaneType::uturn)
+    {
+        if (other.from == 0)
+            return false;
+        else
+            return true;
+    }
+
     return std::find(tag_by_modifier, tag_by_modifier + 8, this->tag) <
            std::find(tag_by_modifier, tag_by_modifier + 8, other.tag);
 }
 
-LaneDataVector laneDataFromDescription(const TurnLaneDescription &turn_lane_description)
+LaneDataVector laneDataFromDescription(TurnLaneDescription turn_lane_description)
 {
     typedef std::unordered_map<TurnLaneType::Mask, std::pair<LaneID, LaneID>> LaneMap;
+    // TODO need to handle cases that have none-in between two identical values
     const auto num_lanes = boost::numeric_cast<LaneID>(turn_lane_description.size());
+
     const auto setLaneData = [&](
         LaneMap &map, TurnLaneType::Mask full_mask, const LaneID current_lane) {
         const auto isSet = [&](const TurnLaneType::Mask test_mask) -> bool {
@@ -82,9 +107,7 @@ LaneDataVector laneDataFromDescription(const TurnLaneDescription &turn_lane_desc
     // transform the map into the lane data vector
     LaneDataVector lane_data;
     for (const auto tag : lane_map)
-    {
-        lane_data.push_back({tag.first, tag.second.first, tag.second.second});
-    }
+        lane_data.push_back({tag.first, tag.second.first, tag.second.second, false});
 
     std::sort(lane_data.begin(), lane_data.end());
 
@@ -94,6 +117,13 @@ LaneDataVector laneDataFromDescription(const TurnLaneDescription &turn_lane_desc
         // which is invalid
         for (std::size_t index = 1; index < lane_data.size(); ++index)
         {
+            // u-turn located somewhere in the middle
+            // Right now we can only handle u-turns at the sides. If we find a u-turn somewhere in
+            // the middle of the tags, we abort the handling right here.
+            if (index + 1 < lane_data.size() &&
+                ((lane_data[index].tag & TurnLaneType::uturn) != TurnLaneType::empty))
+                return false;
+
             if (lane_data[index - 1].to > lane_data[index].from)
                 return false;
         }

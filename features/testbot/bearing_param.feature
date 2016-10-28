@@ -7,7 +7,9 @@ Feature: Bearing parameter
 
     Scenario: Testbot - Intial bearing in simple case
         Given the node map
-            | a | b | c | d |
+            """
+            a b c d
+            """
 
         And the ways
             | nodes |
@@ -23,9 +25,11 @@ Feature: Bearing parameter
 
     Scenario: Testbot - Intial bearing in simple case
         Given the node map
-            | a |   |
-            | 0 | c |
-            | b |   |
+            """
+            a
+            0 c
+            b
+            """
 
         And the ways
             | nodes |
@@ -43,8 +47,10 @@ Feature: Bearing parameter
 
     Scenario: Testbot - Initial bearing on split way
         Given the node map
-           | g | d |  |  |  |  | 1 |  |  |  |  | c | f |
-           | h | a |  |  |  |  | 0 |  |  |  |  | b | e |
+           """
+           g d         1         c f
+           h a         0         b e
+           """
 
         And the ways
             | nodes | oneway |
@@ -76,13 +82,15 @@ Feature: Bearing parameter
 
     Scenario: Testbot - Initial bearing in all direction
         Given the node map
-            | h |  | q | a |   |  | b |
-            |   |  |   |   |   |  |   |
-            |   |  | p | i | j |  |   |
-            | g |  | o | 0 | k |  | c |
-            |   |  | n | m | l |  |   |
-            |   |  |   |   |   |  |   |
-            | f |  |   | e |   |  | d |
+            """
+            h   q a     b
+
+                p i j
+            g   o 0 k   c
+                n m l
+
+            f     e     d
+            """
 
         And the ways
             | nodes | oneway | name |
@@ -104,12 +112,12 @@ Feature: Bearing parameter
             | ha    | yes    | ring |
 
         When I route I should get
-            | from | to | bearings | route                       | bearing                                   |
-            | 0    | q  | 0 90     | ia,ring,ring,ring,ring,ring | 0->0,0->90,180->270,270->0,0->90,90->0    |
-            | 0    | a  | 45 90    | jb,ring,ring,ring,ring,ring | 0->45,45->180,180->270,270->0,0->90,90->0 |
-            | 0    | q  | 90 90    | kc,ring,ring,ring,ring      | 0->90,90->180,270->0,0->90,90->0          |
-            | 0    | a  | 135 90   | ld,ring,ring,ring,ring      | 0->135,135->270,270->0,0->90,90->0        |
-            | 0    | a  | 180 90   | me,ring,ring,ring           | 0->180,180->270,0->90,90->0               |
-            | 0    | a  | 225 90   | nf,ring,ring,ring           | 0->225,225->0,0->90,90->0                 |
-            | 0    | a  | 270 90   | og,ring,ring                | 0->270,270->0,90->0                       |
-            | 0    | a  | 315 90   | ph,ring,ring                | 0->315,315->90,90->0                      |
+            | from | to | bearings | route        | bearing               |
+            | 0    | q  | 0 90     | ia,ring,ring | 0->0,0->90,90->0      |
+            | 0    | a  | 45 90    | jb,ring,ring | 0->45,45->180,90->0   |
+            | 0    | q  | 90 90    | kc,ring,ring | 0->90,90->180,90->0   |
+            | 0    | a  | 135 90   | ld,ring,ring | 0->135,135->270,90->0 |
+            | 0    | a  | 180 90   | me,ring,ring | 0->180,180->270,90->0 |
+            | 0    | a  | 225 90   | nf,ring,ring | 0->225,225->0,90->0   |
+            | 0    | a  | 270 90   | og,ring,ring | 0->270,270->0,90->0   |
+            | 0    | a  | 315 90   | ph,ring,ring | 0->315,315->90,90->0  |

@@ -1,3 +1,4 @@
+#include "storage/storage.hpp"
 #include "contractor/query_edge.hpp"
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/guidance/turn_instruction.hpp"
@@ -5,10 +6,10 @@
 #include "extractor/profile_properties.hpp"
 #include "extractor/query_node.hpp"
 #include "extractor/travel_mode.hpp"
+#include "storage/io.hpp"
 #include "storage/shared_barriers.hpp"
 #include "storage/shared_datatype.hpp"
 #include "storage/shared_memory.hpp"
-#include "storage/storage.hpp"
 #include "engine/datafacade/datafacade_base.hpp"
 #include "util/coordinate.hpp"
 #include "util/exception.hpp"
@@ -26,7 +27,13 @@
 #include <sys/mman.h>
 #endif
 
+#include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/interprocess/exceptions.hpp>
+#include <boost/interprocess/sync/named_sharable_mutex.hpp>
+#include <boost/interprocess/sync/named_upgradable_mutex.hpp>
+#include <boost/interprocess/sync/scoped_lock.hpp>
+#include <boost/interprocess/sync/upgradable_lock.hpp>
 #include <boost/iostreams/seek.hpp>
 
 #include <cstdint>
@@ -47,43 +54,69 @@ using RTreeNode =
     util::StaticRTree<RTreeLeaf, util::ShM<util::Coordinate, true>::vector, true>::TreeNode;
 using QueryGraph = util::StaticGraph<contractor::QueryEdge::EdgeData>;
 
-// delete a shared memory region. report warning if it could not be deleted
-void deleteRegion(const SharedDataType region)
-{
-    if (SharedMemory::RegionExists(region) && !SharedMemory::Remove(region))
-    {
-        const std::string name = [&] {
-            switch (region)
-            {
-            case CURRENT_REGIONS:
-                return "CURRENT_REGIONS";
-            case LAYOUT_1:
-                return "LAYOUT_1";
-            case DATA_1:
-                return "DATA_1";
-            case LAYOUT_2:
-                return "LAYOUT_2";
-            case DATA_2:
-                return "DATA_2";
-            case LAYOUT_NONE:
-                return "LAYOUT_NONE";
-            default: // DATA_NONE:
-                return "DATA_NONE";
-            }
-        }();
-
-        util::SimpleLogger().Write(logWARNING) << "could not delete shared memory region " << name;
-    }
-}
-
 Storage::Storage(StorageConfig config_) : config(std::move(config_)) {}
 
-int Storage::Run()
+struct RegionsLayout
+{
+    SharedDataType current_layout_region;
+    SharedDataType current_data_region;
+    boost::interprocess::named_sharable_mutex &current_regions_mutex;
+    SharedDataType old_layout_region;
+    SharedDataType old_data_region;
+    boost::interprocess::named_sharable_mutex &old_regions_mutex;
+};
+
+RegionsLayout getRegionsLayout(SharedBarriers &barriers)
+{
+    if (SharedMemory::RegionExists(CURRENT_REGIONS))
+    {
+        auto shared_regions = makeSharedMemory(CURRENT_REGIONS);
+        const auto shared_timestamp =
+            static_cast<const SharedDataTimestamp *>(shared_regions->Ptr());
+        if (shared_timestamp->data == DATA_1)
+        {
+            BOOST_ASSERT(shared_timestamp->layout == LAYOUT_1);
+            return RegionsLayout{LAYOUT_1,
+                                 DATA_1,
+                                 barriers.regions_1_mutex,
+                                 LAYOUT_2,
+                                 DATA_2,
+                                 barriers.regions_2_mutex};
+        }
+
+        BOOST_ASSERT(shared_timestamp->data == DATA_2);
+        BOOST_ASSERT(shared_timestamp->layout == LAYOUT_2);
+    }
+
+    return RegionsLayout{
+        LAYOUT_2, DATA_2, barriers.regions_2_mutex, LAYOUT_1, DATA_1, barriers.regions_1_mutex};
+}
+
+Storage::ReturnCode Storage::Run(int max_wait)
 {
     BOOST_ASSERT_MSG(config.IsValid(), "Invalid storage config");
 
     util::LogPolicy::GetInstance().Unmute();
-    SharedBarriers barrier;
+
+    SharedBarriers barriers;
+
+    boost::interprocess::upgradable_lock<boost::interprocess::named_upgradable_mutex>
+        current_regions_lock(barriers.current_regions_mutex, boost::interprocess::defer_lock);
+    try
+    {
+        if (!current_regions_lock.try_lock())
+        {
+            util::SimpleLogger().Write(logWARNING) << "A data update is in progress";
+            return ReturnCode::Error;
+        }
+    }
+    // hard unlock in case of any exception.
+    catch (boost::interprocess::lock_exception &ex)
+    {
+        barriers.current_regions_mutex.unlock_upgradable();
+        // make sure we exit here because this is bad
+        throw;
+    }
 
 #ifdef __linux__
     // try to disable swapping on Linux
@@ -94,32 +127,64 @@ int Storage::Run()
     }
 #endif
 
-    try
+    auto regions_layout = getRegionsLayout(barriers);
+    const SharedDataType layout_region = regions_layout.old_layout_region;
+    const SharedDataType data_region = regions_layout.old_data_region;
+
+    if (max_wait > 0)
     {
-        boost::interprocess::scoped_lock<boost::interprocess::named_mutex> pending_lock(
-            barrier.pending_update_mutex);
+        util::SimpleLogger().Write() << "Waiting for " << max_wait
+                                     << " second for all queries on the old dataset to finish:";
     }
-    catch (...)
+    else
     {
-        // hard unlock in case of any exception.
-        barrier.pending_update_mutex.unlock();
+        util::SimpleLogger().Write() << "Waiting for all queries on the old dataset to finish:";
     }
 
-    // determine segment to use
-    bool segment2_in_use = SharedMemory::RegionExists(LAYOUT_2);
-    const storage::SharedDataType layout_region = [&] {
-        return segment2_in_use ? LAYOUT_1 : LAYOUT_2;
-    }();
-    const storage::SharedDataType data_region = [&] { return segment2_in_use ? DATA_1 : DATA_2; }();
-    const storage::SharedDataType previous_layout_region = [&] {
-        return segment2_in_use ? LAYOUT_2 : LAYOUT_1;
-    }();
-    const storage::SharedDataType previous_data_region = [&] {
-        return segment2_in_use ? DATA_2 : DATA_1;
-    }();
+    boost::interprocess::scoped_lock<boost::interprocess::named_sharable_mutex> regions_lock(
+        regions_layout.old_regions_mutex, boost::interprocess::defer_lock);
 
-    // Allocate a memory layout in shared memory, deallocate previous
-    auto *layout_memory = makeSharedMemory(layout_region, sizeof(SharedDataLayout));
+    if (max_wait > 0)
+    {
+        if (!regions_lock.timed_lock(boost::posix_time::microsec_clock::universal_time() +
+                                     boost::posix_time::seconds(max_wait)))
+        {
+            util::SimpleLogger().Write(logWARNING) << "Queries did not finish in " << max_wait
+                                                   << " seconds. Claiming the lock by force.";
+            // WARNING: if queries are still using the old dataset they might crash
+            if (regions_layout.old_layout_region == LAYOUT_1)
+            {
+                BOOST_ASSERT(regions_layout.old_data_region == DATA_1);
+                barriers.resetRegions1();
+            }
+            else
+            {
+                BOOST_ASSERT(regions_layout.old_layout_region == LAYOUT_2);
+                BOOST_ASSERT(regions_layout.old_data_region == DATA_2);
+                barriers.resetRegions2();
+            }
+
+            return ReturnCode::Retry;
+        }
+    }
+    else
+    {
+        regions_lock.lock();
+    }
+    util::SimpleLogger().Write() << "Ok.";
+
+    // since we can't change the size of a shared memory regions we delete and reallocate
+    if (SharedMemory::RegionExists(layout_region) && !SharedMemory::Remove(layout_region))
+    {
+        throw util::exception("Could not remove " + regionToString(layout_region));
+    }
+    if (SharedMemory::RegionExists(data_region) && !SharedMemory::Remove(data_region))
+    {
+        throw util::exception("Could not remove " + regionToString(data_region));
+    }
+
+    // Allocate a memory layout in shared memory
+    auto layout_memory = makeSharedMemory(layout_region, sizeof(SharedDataLayout), true);
     auto shared_layout_ptr = new (layout_memory->Ptr()) SharedDataLayout();
     auto absolute_file_index_path = boost::filesystem::absolute(config.file_index_path);
 
@@ -140,7 +205,6 @@ int Storage::Run()
     shared_layout_ptr->SetBlockSize<unsigned>(SharedDataLayout::NAME_OFFSETS, name_blocks);
     shared_layout_ptr->SetBlockSize<typename util::RangeTable<16, true>::BlockT>(
         SharedDataLayout::NAME_BLOCKS, name_blocks);
-    util::SimpleLogger().Write() << "name offsets size: " << name_blocks;
     BOOST_ASSERT_MSG(0 != name_blocks, "name file broken");
 
     unsigned number_of_chars = 0;
@@ -166,8 +230,7 @@ int Storage::Run()
         throw util::exception("Could not open " + config.edges_data_path.string() +
                               " for reading.");
     }
-    unsigned number_of_original_edges = 0;
-    edges_input_stream.read((char *)&number_of_original_edges, sizeof(unsigned));
+    const auto number_of_original_edges = io::readElementCount(edges_input_stream);
 
     // note: settings this all to the same size is correct, we extract them from the same struct
     shared_layout_ptr->SetBlockSize<NodeID>(SharedDataLayout::VIA_NODE_LIST,
@@ -176,6 +239,10 @@ int Storage::Run()
                                               number_of_original_edges);
     shared_layout_ptr->SetBlockSize<extractor::TravelMode>(SharedDataLayout::TRAVEL_MODE,
                                                            number_of_original_edges);
+    shared_layout_ptr->SetBlockSize<util::guidance::TurnBearing>(SharedDataLayout::PRE_TURN_BEARING,
+                                                                 number_of_original_edges);
+    shared_layout_ptr->SetBlockSize<util::guidance::TurnBearing>(
+        SharedDataLayout::POST_TURN_BEARING, number_of_original_edges);
     shared_layout_ptr->SetBlockSize<extractor::guidance::TurnInstruction>(
         SharedDataLayout::TURN_INSTRUCTION, number_of_original_edges);
     shared_layout_ptr->SetBlockSize<LaneDataID>(SharedDataLayout::LANE_DATA_ID,
@@ -189,53 +256,32 @@ int Storage::Run()
         throw util::exception("Could not open " + config.hsgr_data_path.string() + " for reading.");
     }
 
-    util::FingerPrint fingerprint_valid = util::FingerPrint::GetValid();
-    util::FingerPrint fingerprint_loaded;
-    hsgr_input_stream.read((char *)&fingerprint_loaded, sizeof(util::FingerPrint));
-    if (fingerprint_loaded.TestGraphUtil(fingerprint_valid))
-    {
-        util::SimpleLogger().Write(logDEBUG) << "Fingerprint checked out ok";
-    }
-    else
-    {
-        util::SimpleLogger().Write(logWARNING) << ".hsgr was prepared with different build. "
-                                                  "Reprocess to get rid of this warning.";
-    }
-
-    // load checksum
-    unsigned checksum = 0;
-    hsgr_input_stream.read((char *)&checksum, sizeof(unsigned));
+    const auto hsgr_header = io::readHSGRHeader(hsgr_input_stream);
     shared_layout_ptr->SetBlockSize<unsigned>(SharedDataLayout::HSGR_CHECKSUM, 1);
-    // load graph node size
-    unsigned number_of_graph_nodes = 0;
-    hsgr_input_stream.read((char *)&number_of_graph_nodes, sizeof(unsigned));
-
-    BOOST_ASSERT_MSG((0 != number_of_graph_nodes), "number of nodes is zero");
     shared_layout_ptr->SetBlockSize<QueryGraph::NodeArrayEntry>(SharedDataLayout::GRAPH_NODE_LIST,
-                                                                number_of_graph_nodes);
-
-    // load graph edge size
-    unsigned number_of_graph_edges = 0;
-    hsgr_input_stream.read((char *)&number_of_graph_edges, sizeof(unsigned));
-    // BOOST_ASSERT_MSG(0 != number_of_graph_edges, "number of graph edges is zero");
+                                                                hsgr_header.number_of_nodes);
     shared_layout_ptr->SetBlockSize<QueryGraph::EdgeArrayEntry>(SharedDataLayout::GRAPH_EDGE_LIST,
-                                                                number_of_graph_edges);
+                                                                hsgr_header.number_of_edges);
 
     // load rsearch tree size
     boost::filesystem::ifstream tree_node_file(config.ram_index_path, std::ios::binary);
 
-    uint32_t tree_size = 0;
-    tree_node_file.read((char *)&tree_size, sizeof(uint32_t));
+    const auto tree_size = io::readElementCount(tree_node_file);
     shared_layout_ptr->SetBlockSize<RTreeNode>(SharedDataLayout::R_SEARCH_TREE, tree_size);
 
-    // load profile properties
-    shared_layout_ptr->SetBlockSize<extractor::ProfileProperties>(SharedDataLayout::PROPERTIES, 1);
+    // allocate space in shared memory for profile properties
+    const auto properties_size = io::readPropertiesCount();
+    shared_layout_ptr->SetBlockSize<extractor::ProfileProperties>(SharedDataLayout::PROPERTIES,
+                                                                  properties_size);
 
-    // load timestamp size
+    // read timestampsize
     boost::filesystem::ifstream timestamp_stream(config.timestamp_path);
-    std::string m_timestamp;
-    getline(timestamp_stream, m_timestamp);
-    shared_layout_ptr->SetBlockSize<char>(SharedDataLayout::TIMESTAMP, m_timestamp.length());
+    if (!timestamp_stream)
+    {
+        throw util::exception("Could not open " + config.timestamp_path.string() + " for reading.");
+    }
+    const auto timestamp_size = io::readNumberOfBytes(timestamp_stream);
+    shared_layout_ptr->SetBlockSize<char>(SharedDataLayout::TIMESTAMP, timestamp_size);
 
     // load core marker size
     boost::filesystem::ifstream core_marker_file(config.core_data_path, std::ios::binary);
@@ -255,8 +301,7 @@ int Storage::Run()
     {
         throw util::exception("Could not open " + config.core_data_path.string() + " for reading.");
     }
-    unsigned coordinate_list_size = 0;
-    nodes_input_stream.read((char *)&coordinate_list_size, sizeof(unsigned));
+    const auto coordinate_list_size = io::readElementCount(nodes_input_stream);
     shared_layout_ptr->SetBlockSize<util::Coordinate>(SharedDataLayout::COORDINATE_LIST,
                                                       coordinate_list_size);
     // we'll read a list of OSM node IDs from the same data, so set the block size for the same
@@ -281,8 +326,12 @@ int Storage::Run()
     boost::iostreams::seek(
         geometry_input_stream, number_of_geometries_indices * sizeof(unsigned), BOOST_IOS::cur);
     geometry_input_stream.read((char *)&number_of_compressed_geometries, sizeof(unsigned));
-    shared_layout_ptr->SetBlockSize<extractor::CompressedEdgeContainer::CompressedEdge>(
-        SharedDataLayout::GEOMETRIES_LIST, number_of_compressed_geometries);
+    shared_layout_ptr->SetBlockSize<NodeID>(SharedDataLayout::GEOMETRIES_NODE_LIST,
+                                            number_of_compressed_geometries);
+    shared_layout_ptr->SetBlockSize<EdgeWeight>(SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST,
+                                                number_of_compressed_geometries);
+    shared_layout_ptr->SetBlockSize<EdgeWeight>(SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST,
+                                                number_of_compressed_geometries);
 
     // load datasource sizes.  This file is optional, and it's non-fatal if it doesn't
     // exist.
@@ -293,17 +342,14 @@ int Storage::Run()
         throw util::exception("Could not open " + config.datasource_indexes_path.string() +
                               " for reading.");
     }
-    std::size_t number_of_compressed_datasources = 0;
-    if (geometry_datasource_input_stream)
-    {
-        geometry_datasource_input_stream.read(
-            reinterpret_cast<char *>(&number_of_compressed_datasources), sizeof(std::size_t));
-    }
+    const auto number_of_compressed_datasources =
+        io::readElementCount(geometry_datasource_input_stream);
     shared_layout_ptr->SetBlockSize<uint8_t>(SharedDataLayout::DATASOURCES_LIST,
                                              number_of_compressed_datasources);
 
     // Load datasource name sizes.  This file is optional, and it's non-fatal if it doesn't
     // exist
+
     boost::filesystem::ifstream datasource_names_input_stream(config.datasource_names_path,
                                                               std::ios::binary);
     if (!datasource_names_input_stream)
@@ -311,30 +357,18 @@ int Storage::Run()
         throw util::exception("Could not open " + config.datasource_names_path.string() +
                               " for reading.");
     }
-    std::vector<char> m_datasource_name_data;
-    std::vector<std::size_t> m_datasource_name_offsets;
-    std::vector<std::size_t> m_datasource_name_lengths;
-    if (datasource_names_input_stream)
-    {
-        std::string name;
-        while (std::getline(datasource_names_input_stream, name))
-        {
-            m_datasource_name_offsets.push_back(m_datasource_name_data.size());
-            std::copy(name.c_str(),
-                      name.c_str() + name.size(),
-                      std::back_inserter(m_datasource_name_data));
-            m_datasource_name_lengths.push_back(name.size());
-        }
-    }
-    shared_layout_ptr->SetBlockSize<char>(SharedDataLayout::DATASOURCE_NAME_DATA,
-                                          m_datasource_name_data.size());
-    shared_layout_ptr->SetBlockSize<std::size_t>(SharedDataLayout::DATASOURCE_NAME_OFFSETS,
-                                                 m_datasource_name_offsets.size());
-    shared_layout_ptr->SetBlockSize<std::size_t>(SharedDataLayout::DATASOURCE_NAME_LENGTHS,
-                                                 m_datasource_name_lengths.size());
+    const io::DatasourceNamesData datasource_names_data =
+        io::readDatasourceNames(datasource_names_input_stream);
 
+    shared_layout_ptr->SetBlockSize<char>(SharedDataLayout::DATASOURCE_NAME_DATA,
+                                          datasource_names_data.names.size());
+    shared_layout_ptr->SetBlockSize<std::size_t>(SharedDataLayout::DATASOURCE_NAME_OFFSETS,
+                                                 datasource_names_data.offsets.size());
+    shared_layout_ptr->SetBlockSize<std::size_t>(SharedDataLayout::DATASOURCE_NAME_LENGTHS,
+                                                 datasource_names_data.lengths.size());
     boost::filesystem::ifstream intersection_stream(config.intersection_class_path,
                                                     std::ios::binary);
+
     if (!static_cast<bool>(intersection_stream))
         throw util::exception("Could not open " + config.intersection_class_path.string() +
                               " for reading.");
@@ -375,7 +409,7 @@ int Storage::Run()
     }
 
     std::uint64_t num_bearings;
-    intersection_stream.read(reinterpret_cast<char*>(&num_bearings),sizeof(num_bearings));
+    intersection_stream.read(reinterpret_cast<char *>(&num_bearings), sizeof(num_bearings));
 
     std::vector<DiscreteBearing> bearing_class_table(num_bearings);
     intersection_stream.read(reinterpret_cast<char *>(&bearing_class_table[0]),
@@ -387,7 +421,7 @@ int Storage::Run()
     boost::filesystem::ifstream lane_data_stream(config.turn_lane_data_path, std::ios::binary);
     std::uint64_t lane_tupel_count = 0;
     lane_data_stream.read(reinterpret_cast<char *>(&lane_tupel_count), sizeof(lane_tupel_count));
-    shared_layout_ptr->SetBlockSize<util::guidance::LaneTupelIdPair>(
+    shared_layout_ptr->SetBlockSize<util::guidance::LaneTupleIdPair>(
         SharedDataLayout::TURN_LANE_DATA, lane_tupel_count);
 
     if (!static_cast<bool>(intersection_stream))
@@ -405,7 +439,7 @@ int Storage::Run()
     // allocate shared memory block
     util::SimpleLogger().Write() << "allocating shared memory of "
                                  << shared_layout_ptr->GetSizeOfLayout() << " bytes";
-    auto *shared_memory = makeSharedMemory(data_region, shared_layout_ptr->GetSizeOfLayout());
+    auto shared_memory = makeSharedMemory(data_region, shared_layout_ptr->GetSizeOfLayout(), true);
     char *shared_memory_ptr = static_cast<char *>(shared_memory->Ptr());
 
     // read actual data into shared memory object //
@@ -413,7 +447,7 @@ int Storage::Run()
     // hsgr checksum
     unsigned *checksum_ptr = shared_layout_ptr->GetBlockPtr<unsigned, true>(
         shared_memory_ptr, SharedDataLayout::HSGR_CHECKSUM);
-    *checksum_ptr = checksum;
+    *checksum_ptr = hsgr_header.checksum;
 
     // ram index file name
     char *file_index_path_ptr = shared_layout_ptr->GetBlockPtr<char, true>(
@@ -462,7 +496,7 @@ int Storage::Run()
 
     // make sure do write canary...
     auto *turn_lane_data_ptr =
-        shared_layout_ptr->GetBlockPtr<util::guidance::LaneTupelIdPair, true>(
+        shared_layout_ptr->GetBlockPtr<util::guidance::LaneTupleIdPair, true>(
             shared_memory_ptr, SharedDataLayout::TURN_LANE_DATA);
     if (shared_layout_ptr->GetBlockSize(SharedDataLayout::TURN_LANE_DATA) > 0)
     {
@@ -496,7 +530,7 @@ int Storage::Run()
     }
 
     // load original edge information
-    NodeID *via_node_ptr = shared_layout_ptr->GetBlockPtr<NodeID, true>(
+    GeometryID *via_geometry_ptr = shared_layout_ptr->GetBlockPtr<GeometryID, true>(
         shared_memory_ptr, SharedDataLayout::VIA_NODE_LIST);
 
     unsigned *name_id_ptr = shared_layout_ptr->GetBlockPtr<unsigned, true>(
@@ -505,6 +539,12 @@ int Storage::Run()
     extractor::TravelMode *travel_mode_ptr =
         shared_layout_ptr->GetBlockPtr<extractor::TravelMode, true>(shared_memory_ptr,
                                                                     SharedDataLayout::TRAVEL_MODE);
+    util::guidance::TurnBearing *pre_turn_bearing_ptr =
+        shared_layout_ptr->GetBlockPtr<util::guidance::TurnBearing, true>(
+            shared_memory_ptr, SharedDataLayout::PRE_TURN_BEARING);
+    util::guidance::TurnBearing *post_turn_bearing_ptr =
+        shared_layout_ptr->GetBlockPtr<util::guidance::TurnBearing, true>(
+            shared_memory_ptr, SharedDataLayout::POST_TURN_BEARING);
 
     LaneDataID *lane_data_id_ptr = shared_layout_ptr->GetBlockPtr<LaneDataID, true>(
         shared_memory_ptr, SharedDataLayout::LANE_DATA_ID);
@@ -516,17 +556,16 @@ int Storage::Run()
     EntryClassID *entry_class_id_ptr = shared_layout_ptr->GetBlockPtr<EntryClassID, true>(
         shared_memory_ptr, SharedDataLayout::ENTRY_CLASSID);
 
-    extractor::OriginalEdgeData current_edge_data;
-    for (unsigned i = 0; i < number_of_original_edges; ++i)
-    {
-        edges_input_stream.read((char *)&(current_edge_data), sizeof(extractor::OriginalEdgeData));
-        via_node_ptr[i] = current_edge_data.via_node;
-        name_id_ptr[i] = current_edge_data.name_id;
-        travel_mode_ptr[i] = current_edge_data.travel_mode;
-        lane_data_id_ptr[i] = current_edge_data.lane_data_id;
-        turn_instructions_ptr[i] = current_edge_data.turn_instruction;
-        entry_class_id_ptr[i] = current_edge_data.entry_classid;
-    }
+    io::readEdges(edges_input_stream,
+                  via_geometry_ptr,
+                  name_id_ptr,
+                  turn_instructions_ptr,
+                  lane_data_id_ptr,
+                  travel_mode_ptr,
+                  entry_class_id_ptr,
+                  pre_turn_bearing_ptr,
+                  post_turn_bearing_ptr,
+                  number_of_original_edges);
     edges_input_stream.close();
 
     // load compressed geometry
@@ -544,19 +583,42 @@ int Storage::Run()
             (char *)geometries_index_ptr,
             shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_INDEX));
     }
-    extractor::CompressedEdgeContainer::CompressedEdge *geometries_list_ptr =
-        shared_layout_ptr->GetBlockPtr<extractor::CompressedEdgeContainer::CompressedEdge, true>(
-            shared_memory_ptr, SharedDataLayout::GEOMETRIES_LIST);
+    NodeID *geometries_node_id_list_ptr = shared_layout_ptr->GetBlockPtr<NodeID, true>(
+        shared_memory_ptr, SharedDataLayout::GEOMETRIES_NODE_LIST);
 
     geometry_input_stream.read((char *)&temporary_value, sizeof(unsigned));
     BOOST_ASSERT(temporary_value ==
-                 shared_layout_ptr->num_entries[SharedDataLayout::GEOMETRIES_LIST]);
+                 shared_layout_ptr->num_entries[SharedDataLayout::GEOMETRIES_NODE_LIST]);
 
-    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_LIST) > 0)
+    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_NODE_LIST) > 0)
     {
         geometry_input_stream.read(
-            (char *)geometries_list_ptr,
-            shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_LIST));
+            (char *)geometries_node_id_list_ptr,
+            shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_NODE_LIST));
+    }
+    EdgeWeight *geometries_fwd_weight_list_ptr = shared_layout_ptr->GetBlockPtr<EdgeWeight, true>(
+        shared_memory_ptr, SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST);
+
+    BOOST_ASSERT(temporary_value ==
+                 shared_layout_ptr->num_entries[SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST]);
+
+    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST) > 0)
+    {
+        geometry_input_stream.read(
+            (char *)geometries_fwd_weight_list_ptr,
+            shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST));
+    }
+    EdgeWeight *geometries_rev_weight_list_ptr = shared_layout_ptr->GetBlockPtr<EdgeWeight, true>(
+        shared_memory_ptr, SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST);
+
+    BOOST_ASSERT(temporary_value ==
+                 shared_layout_ptr->num_entries[SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST]);
+
+    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST) > 0)
+    {
+        geometry_input_stream.read(
+            (char *)geometries_rev_weight_list_ptr,
+            shared_layout_ptr->GetBlockSize(SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST));
     }
 
     // load datasource information (if it exists)
@@ -564,38 +626,37 @@ int Storage::Run()
         shared_memory_ptr, SharedDataLayout::DATASOURCES_LIST);
     if (shared_layout_ptr->GetBlockSize(SharedDataLayout::DATASOURCES_LIST) > 0)
     {
-        geometry_datasource_input_stream.read(
-            reinterpret_cast<char *>(datasources_list_ptr),
-            shared_layout_ptr->GetBlockSize(SharedDataLayout::DATASOURCES_LIST));
+        io::readDatasourceIndexes(geometry_datasource_input_stream,
+                                  datasources_list_ptr,
+                                  number_of_compressed_datasources);
     }
 
     // load datasource name information (if it exists)
+
     char *datasource_name_data_ptr = shared_layout_ptr->GetBlockPtr<char, true>(
         shared_memory_ptr, SharedDataLayout::DATASOURCE_NAME_DATA);
     if (shared_layout_ptr->GetBlockSize(SharedDataLayout::DATASOURCE_NAME_DATA) > 0)
     {
-        util::SimpleLogger().Write()
-            << "Copying " << (m_datasource_name_data.end() - m_datasource_name_data.begin())
-            << " chars into name data ptr";
-        std::copy(
-            m_datasource_name_data.begin(), m_datasource_name_data.end(), datasource_name_data_ptr);
+        std::copy(datasource_names_data.names.begin(),
+                  datasource_names_data.names.end(),
+                  datasource_name_data_ptr);
     }
 
-    auto datasource_name_offsets_ptr = shared_layout_ptr->GetBlockPtr<std::size_t, true>(
+    auto datasource_name_offsets_ptr = shared_layout_ptr->GetBlockPtr<std::uint32_t, true>(
         shared_memory_ptr, SharedDataLayout::DATASOURCE_NAME_OFFSETS);
     if (shared_layout_ptr->GetBlockSize(SharedDataLayout::DATASOURCE_NAME_OFFSETS) > 0)
     {
-        std::copy(m_datasource_name_offsets.begin(),
-                  m_datasource_name_offsets.end(),
+        std::copy(datasource_names_data.offsets.begin(),
+                  datasource_names_data.offsets.end(),
                   datasource_name_offsets_ptr);
     }
 
-    auto datasource_name_lengths_ptr = shared_layout_ptr->GetBlockPtr<std::size_t, true>(
+    auto datasource_name_lengths_ptr = shared_layout_ptr->GetBlockPtr<std::uint32_t, true>(
         shared_memory_ptr, SharedDataLayout::DATASOURCE_NAME_LENGTHS);
     if (shared_layout_ptr->GetBlockSize(SharedDataLayout::DATASOURCE_NAME_LENGTHS) > 0)
     {
-        std::copy(m_datasource_name_lengths.begin(),
-                  m_datasource_name_lengths.end(),
+        std::copy(datasource_names_data.lengths.begin(),
+                  datasource_names_data.lengths.end(),
                   datasource_name_lengths_ptr);
     }
 
@@ -605,32 +666,20 @@ int Storage::Run()
     std::uint64_t *osmnodeid_ptr = shared_layout_ptr->GetBlockPtr<std::uint64_t, true>(
         shared_memory_ptr, SharedDataLayout::OSM_NODE_ID_LIST);
     util::PackedVector<OSMNodeID, true> osmnodeid_list;
-    osmnodeid_list.reset(
-        osmnodeid_ptr, shared_layout_ptr->num_entries[storage::SharedDataLayout::OSM_NODE_ID_LIST]);
-
-    extractor::QueryNode current_node;
-    for (unsigned i = 0; i < coordinate_list_size; ++i)
-    {
-        nodes_input_stream.read((char *)&current_node, sizeof(extractor::QueryNode));
-        coordinates_ptr[i] = util::Coordinate(current_node.lon, current_node.lat);
-        osmnodeid_list.push_back(current_node.node_id);
-    }
+    osmnodeid_list.reset(osmnodeid_ptr,
+                         shared_layout_ptr->num_entries[SharedDataLayout::OSM_NODE_ID_LIST]);
+    io::readNodes(nodes_input_stream, coordinates_ptr, osmnodeid_list, coordinate_list_size);
     nodes_input_stream.close();
 
     // store timestamp
     char *timestamp_ptr =
         shared_layout_ptr->GetBlockPtr<char, true>(shared_memory_ptr, SharedDataLayout::TIMESTAMP);
-    std::copy(m_timestamp.c_str(), m_timestamp.c_str() + m_timestamp.length(), timestamp_ptr);
+    io::readTimestamp(timestamp_stream, timestamp_ptr, timestamp_size);
 
     // store search tree portion of rtree
-    char *rtree_ptr = shared_layout_ptr->GetBlockPtr<char, true>(shared_memory_ptr,
-                                                                 SharedDataLayout::R_SEARCH_TREE);
-
-    if (tree_size > 0)
-    {
-        tree_node_file.read(rtree_ptr, sizeof(RTreeNode) * tree_size);
-    }
-    tree_node_file.close();
+    RTreeNode *rtree_ptrtest = shared_layout_ptr->GetBlockPtr<RTreeNode, true>(
+        shared_memory_ptr, SharedDataLayout::R_SEARCH_TREE);
+    io::readRamIndex(tree_node_file, rtree_ptrtest, tree_size);
 
     // load core markers
     std::vector<char> unpacked_core_markers(number_of_core_markers);
@@ -665,25 +714,21 @@ int Storage::Run()
     QueryGraph::NodeArrayEntry *graph_node_list_ptr =
         shared_layout_ptr->GetBlockPtr<QueryGraph::NodeArrayEntry, true>(
             shared_memory_ptr, SharedDataLayout::GRAPH_NODE_LIST);
-    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GRAPH_NODE_LIST) > 0)
-    {
-        hsgr_input_stream.read((char *)graph_node_list_ptr,
-                               shared_layout_ptr->GetBlockSize(SharedDataLayout::GRAPH_NODE_LIST));
-    }
 
     // load the edges of the search graph
     QueryGraph::EdgeArrayEntry *graph_edge_list_ptr =
         shared_layout_ptr->GetBlockPtr<QueryGraph::EdgeArrayEntry, true>(
             shared_memory_ptr, SharedDataLayout::GRAPH_EDGE_LIST);
-    if (shared_layout_ptr->GetBlockSize(SharedDataLayout::GRAPH_EDGE_LIST) > 0)
-    {
-        hsgr_input_stream.read((char *)graph_edge_list_ptr,
-                               shared_layout_ptr->GetBlockSize(SharedDataLayout::GRAPH_EDGE_LIST));
-    }
+
+    io::readHSGR(hsgr_input_stream,
+                 graph_node_list_ptr,
+                 hsgr_header.number_of_nodes,
+                 graph_edge_list_ptr,
+                 hsgr_header.number_of_edges);
     hsgr_input_stream.close();
 
     // load profile properties
-    auto profile_properties_ptr =
+    extractor::ProfileProperties *profile_properties_ptr =
         shared_layout_ptr->GetBlockPtr<extractor::ProfileProperties, true>(
             shared_memory_ptr, SharedDataLayout::PROPERTIES);
     boost::filesystem::ifstream profile_properties_stream(config.properties_path);
@@ -691,8 +736,8 @@ int Storage::Run()
     {
         util::exception("Could not open " + config.properties_path.string() + " for reading!");
     }
-    profile_properties_stream.read(reinterpret_cast<char *>(profile_properties_ptr),
-                                   sizeof(extractor::ProfileProperties));
+    io::readProperties(
+        profile_properties_stream, profile_properties_ptr, sizeof(extractor::ProfileProperties));
 
     // load intersection classes
     if (!bearing_class_id_table.empty())
@@ -731,29 +776,51 @@ int Storage::Run()
         std::copy(entry_class_table.begin(), entry_class_table.end(), entry_class_ptr);
     }
 
-    // acquire lock
-    SharedMemory *data_type_memory =
-        makeSharedMemory(CURRENT_REGIONS, sizeof(SharedDataTimestamp), true, false);
+    auto data_type_memory = makeSharedMemory(CURRENT_REGIONS, sizeof(SharedDataTimestamp), true);
     SharedDataTimestamp *data_timestamp_ptr =
         static_cast<SharedDataTimestamp *>(data_type_memory->Ptr());
 
-    boost::interprocess::scoped_lock<boost::interprocess::named_mutex> query_lock(
-        barrier.query_mutex);
-
-    // notify all processes that were waiting for this condition
-    if (0 < barrier.number_of_queries)
     {
-        barrier.no_running_queries_condition.wait(query_lock);
+        boost::interprocess::scoped_lock<boost::interprocess::named_upgradable_mutex>
+            current_regions_exclusive_lock;
+
+        if (max_wait > 0)
+        {
+            util::SimpleLogger().Write() << "Waiting for " << max_wait
+                                         << " seconds to write new dataset timestamp";
+            auto end_time = boost::posix_time::microsec_clock::universal_time() +
+                            boost::posix_time::seconds(max_wait);
+            current_regions_exclusive_lock =
+                boost::interprocess::scoped_lock<boost::interprocess::named_upgradable_mutex>(
+                    std::move(current_regions_lock), end_time);
+
+            if (!current_regions_exclusive_lock.owns())
+            {
+                util::SimpleLogger().Write(logWARNING) << "Aquiring the lock timed out after "
+                                                       << max_wait
+                                                       << " seconds. Claiming the lock by force.";
+                current_regions_lock.unlock();
+                current_regions_lock.release();
+                storage::SharedBarriers::resetCurrentRegions();
+                return ReturnCode::Retry;
+            }
+        }
+        else
+        {
+            util::SimpleLogger().Write() << "Waiting to write new dataset timestamp";
+            current_regions_exclusive_lock =
+                boost::interprocess::scoped_lock<boost::interprocess::named_upgradable_mutex>(
+                    std::move(current_regions_lock));
+        }
+
+        util::SimpleLogger().Write() << "Ok.";
+        data_timestamp_ptr->layout = layout_region;
+        data_timestamp_ptr->data = data_region;
+        data_timestamp_ptr->timestamp += 1;
     }
+    util::SimpleLogger().Write() << "All data loaded.";
 
-    data_timestamp_ptr->layout = layout_region;
-    data_timestamp_ptr->data = data_region;
-    data_timestamp_ptr->timestamp += 1;
-    deleteRegion(previous_data_region);
-    deleteRegion(previous_layout_region);
-    util::SimpleLogger().Write() << "all data loaded";
-
-    return EXIT_SUCCESS;
+    return ReturnCode::Ok;
 }
 }
 }

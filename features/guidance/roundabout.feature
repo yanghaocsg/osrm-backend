@@ -5,44 +5,15 @@ Feature: Basic Roundabout
         Given the profile "car"
         Given a grid size of 10 meters
 
-    Scenario: Enter and Exit
-        Given the node map
-            |   |   | a |   |   |
-            |   |   | b |   |   |
-            | h | g |   | c | d |
-            |   |   | e |   |   |
-            |   |   | f |   |   |
-
-       And the ways
-            | nodes  | junction   |
-            | ab     |            |
-            | cd     |            |
-            | ef     |            |
-            | gh     |            |
-            | bgecb  | roundabout |
-
-       When I route I should get
-           | waypoints | route    | turns                           |
-           | a,d       | ab,cd,cd | depart,roundabout-exit-3,arrive |
-           | a,f       | ab,ef,ef | depart,roundabout-exit-2,arrive |
-           | a,h       | ab,gh,gh | depart,roundabout-exit-1,arrive |
-           | d,f       | cd,ef,ef | depart,roundabout-exit-3,arrive |
-           | d,h       | cd,gh,gh | depart,roundabout-exit-2,arrive |
-           | d,a       | cd,ab,ab | depart,roundabout-exit-1,arrive |
-           | f,h       | ef,gh,gh | depart,roundabout-exit-3,arrive |
-           | f,a       | ef,ab,ab | depart,roundabout-exit-2,arrive |
-           | f,d       | ef,cd,cd | depart,roundabout-exit-1,arrive |
-           | h,a       | gh,ab,ab | depart,roundabout-exit-3,arrive |
-           | h,d       | gh,cd,cd | depart,roundabout-exit-2,arrive |
-           | h,f       | gh,ef,ef | depart,roundabout-exit-1,arrive |
-
     Scenario: Only Enter
         Given the node map
-            |   |   | a |   |   |
-            |   |   | b |   |   |
-            | d | c |   | g | h |
-            |   |   | e |   |   |
-            |   |   | f |   |   |
+            """
+                a
+                b
+            d c   g h
+                e
+                f
+            """
 
        And the ways
             | nodes  | junction   |
@@ -67,13 +38,32 @@ Feature: Basic Roundabout
            | h,c       | gh,bcegb,bcegb | depart,roundabout-exit-undefined,arrive |
            | h,e       | gh,bcegb,bcegb | depart,roundabout-exit-undefined,arrive |
 
+    #2927
+    Scenario: Only Roundabout
+        Given the node map
+            """
+              a
+            b   d
+              c
+            """
+
+       And the ways
+            | nodes  | junction   |
+            | abcda  | roundabout |
+
+       When I route I should get
+           | waypoints | route       | turns         |
+           | a,c       | abcda,abcda | depart,arrive |
+
     Scenario: Only Exit
         Given the node map
-            |   |   | a |   |   |
-            |   |   | b |   |   |
-            | d | c |   | g | h |
-            |   |   | e |   |   |
-            |   |   | f |   |   |
+            """
+                a
+                b
+            d c   g h
+                e
+                f
+            """
 
        And the ways
             | nodes  | junction   |
@@ -101,11 +91,13 @@ Feature: Basic Roundabout
 
     Scenario: Drive Around
         Given the node map
-            |   |   | a |   |   |
-            |   |   | b |   |   |
-            | d | c |   | g | h |
-            |   |   | e |   |   |
-            |   |   | f |   |   |
+            """
+                a
+                b
+            d c   g h
+                e
+                f
+            """
 
        And the ways
             | nodes  | junction   |
@@ -132,11 +124,13 @@ Feature: Basic Roundabout
 
      Scenario: Mixed Entry and Exit
         Given the node map
-           |   | c |   | a |   |
-           | j |   | b |   | f |
-           |   | k |   | e |   |
-           | l |   | h |   | d |
-           |   | g |   | i |   |
+           """
+             c   a
+           j   b   f
+             k   e
+           l   h   d
+             g   i
+           """
 
         And the ways
            | nodes | junction   | oneway |
@@ -167,13 +161,15 @@ Feature: Basic Roundabout
 
     Scenario: Mixed Entry and Exit - segregated roads
         Given the node map
-           |   |   | a |   | c |   |   |
-           |   |   |   |   |   |   |   |
-           | l |   |   | b |   |   | d |
-           |   |   | k |   | e |   |   |
-           | j |   |   | h |   |   | f |
-           |   |   |   |   |   |   |   |
-           |   |   | i |   | g |   |   |
+           """
+               a   c
+
+           l     b     d
+               k   e
+           j     h     f
+
+               i   g
+           """
 
         And the ways
            | nodes | junction   | oneway |
@@ -204,13 +200,15 @@ Feature: Basic Roundabout
 
     Scenario: Mixed Entry and Exit - segregated roads, different names
         Given the node map
-           |   |   | a |   | c |   |   |
-           |   |   |   |   |   |   |   |
-           | l |   |   | b |   |   | d |
-           |   |   | k |   | e |   |   |
-           | j |   |   | h |   |   | f |
-           |   |   |   |   |   |   |   |
-           |   |   | i |   | g |   |   |
+           """
+               a   c
+
+           l     b     d
+               k   e
+           j     h     f
+
+               i   g
+           """
 
         And the ways
            | nodes | junction   | oneway |
@@ -243,142 +241,26 @@ Feature: Basic Roundabout
            | j,f       | jk,ef,ef | depart,roundabout-exit-2,arrive |
            | j,c       | jk,bc,bc | depart,roundabout-exit-3,arrive |
 
-       Scenario: Collinear in X
-        Given the node map
-            | a | b | c | d | f |
-            |   |   | e |   |   |
-
-        And the ways
-            | nodes | junction   |
-            | ab    |            |
-            | bcdb  | roundabout |
-            | ce    |            |
-            | df    |            |
-
-        When I route I should get
-            | waypoints | route    | turns                           |
-            | a,e       | ab,ce,ce | depart,roundabout-exit-1,arrive |
-            | a,f       | ab,df,df | depart,roundabout-exit-2,arrive |
-
-       Scenario: Collinear in Y
-        Given the node map
-            |   | a |
-            |   | b |
-            | e | c |
-            |   | d |
-            |   | f |
-
-        And the ways
-            | nodes | junction   |
-            | ab    |            |
-            | bcdb  | roundabout |
-            | ce    |            |
-            | df    |            |
-
-        When I route I should get
-            | waypoints | route    | turns                           |
-            | a,e       | ab,ce,ce | depart,roundabout-exit-1,arrive |
-            | a,f       | ab,df,df | depart,roundabout-exit-2,arrive |
-
-       Scenario: Collinear in X,Y
-        Given the node map
-            | a |   |   |
-            | b |   |   |
-            | c | d | f |
-            | e |   |   |
-
-        And the ways
-            | nodes | junction   |
-            | ab    |            |
-            | bcdb  | roundabout |
-            | ce    |            |
-            | df    |            |
-
-        When I route I should get
-            | waypoints | route    | turns                           |
-            | a,e       | ab,ce,ce | depart,roundabout-exit-1,arrive |
-            | a,f       | ab,df,df | depart,roundabout-exit-2,arrive |
-
-       Scenario: Collinear in X,Y
-        Given the node map
-            | a |   |   |
-            | d |   |   |
-            | b | c | f |
-            | e |   |   |
-
-        And the ways
-            | nodes | junction   |
-            | ad    |            |
-            | bcdb  | roundabout |
-            | be    |            |
-            | cf    |            |
-
-        When I route I should get
-            | waypoints | route    | turns                           |
-            | a,e       | ad,be,be | depart,roundabout-exit-1,arrive |
-            | a,f       | ad,cf,cf | depart,roundabout-exit-2,arrive |
-
-       Scenario: Collinear in X,Y
-        Given the node map
-            | a |   |   |
-            | c |   |   |
-            | d | b | f |
-            | e |   |   |
-
-        And the ways
-            | nodes | junction   |
-            | ac    |            |
-            | bcdb  | roundabout |
-            | de    |            |
-            | bf    |            |
-
-        When I route I should get
-            | waypoints | route    | turns                           |
-            | a,e       | ac,de,de | depart,roundabout-exit-1,arrive |
-            | a,f       | ac,bf,bf | depart,roundabout-exit-2,arrive |
-
-    Scenario: Enter and Exit - Bearings
-        Given the node map
-            |   |   |   | a |   |   |   |
-            |   |   |   |   |   |   |   |
-            |   |   | i | b | l |   |   |
-            | h |   | g |   | c |   | d |
-            |   |   | j | e | k |   |   |
-            |   |   |   |   |   |   |   |
-            |   |   |   | f |   |   |   |
-
-       And the ways
-            | nodes      | junction   |
-            | ab         |            |
-            | cd         |            |
-            | ef         |            |
-            | gh         |            |
-            | bigjekclb  | roundabout |
-
-       When I route I should get
-           | waypoints | route    | turns                           | bearing                |
-           | a,d       | ab,cd,cd | depart,roundabout-exit-3,arrive | 0->180,180->270,90->0  |
-           | a,f       | ab,ef,ef | depart,roundabout-exit-2,arrive | 0->180,180->270,180->0 |
-           | a,h       | ab,gh,gh | depart,roundabout-exit-1,arrive | 0->180,180->270,270->0 |
-
     Scenario: Motorway Roundabout
     #See 39.933742 -75.082345
         Given the node map
-            |   |   |   |   | l |   |   |   | a |   | i |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   | b |   |   |   |   |
-            |   |   |   | c |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   | h |   |   |
-            | n |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   | d |   |   |   |   |   |   |   | j |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   | m |   |   | g |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   | e |   | f |   |   |   |   |   |   |
+            """
+                    l       a   i
+
+
+                        b
+                  c
+
+                            h
+            n
+
+                d               j
+
+                    m     g
+
+
+                e   f
+            """
 
         And the ways
             | nodes | junction   | name     | highway    | oneway | ref    |
@@ -395,22 +277,29 @@ Feature: Basic Roundabout
             | dmg   | roundabout |          | trunk_link | yes    |        |
 
         When I route I should get
-            | waypoints | route                                                 | turns                           |
-            | a,e       | crescent (US 130),crescent (US 130),crescent (US 130) | depart,roundabout-exit-3,arrive |
-            | j,l       | NJ 38,NJ 38,NJ 38                                     | depart,roundabout-exit-2,arrive |
+            | waypoints | route                                                 | turns                           | ref                     |
+            | a,e       | crescent,crescent,crescent                            | depart,roundabout-exit-3,arrive | US 130,US 130,US 130    |
+            | j,l       | ,,                                                    | depart,roundabout-exit-2,arrive | NJ 38,NJ 38,NJ 38       |
 
+    @todo
+    # this test previously only passed by accident. We need to handle throughabouts correctly, since staying on massachusetts is actually
+    # the desired setting. Rotary instructions here are not wanted but rather no instruction at all to go through the roundabout (or add
+    # a throughabout instruction)
+    # see https://github.com/Project-OSRM/osrm-backend/issues/3142
     Scenario: Double Roundabout with through-lane
     #http://map.project-osrm.org/?z=18&center=38.911752%2C-77.048667&loc=38.912003%2C-77.050831&loc=38.909277%2C-77.042516&hl=en&alt=0
         Given the node map
-            |   |   |   |   | o |   |   |   |   |   |   |   |   |   |   |   | n |   |   |   |   |
-            |   |   |   |   | e |   |   |   |   |   |   |   |   |   |   |   | j |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   | q |   |   |   |   |   |   |   |   |   |   |   |   |   |   |
-            | a |   | b |   |   |   |   |   | s |   | f |   |   |   | g |   |   |   | i |   | k |
-            |   |   |   |   |   |   | r |   |   |   |   |   |   |   |   |   |   | p |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   | t |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   | c |   | d |   |   |   |   |   |   |   |   |   | h |   |   |   |   |
-            |   |   |   |   | l |   |   |   |   |   |   |   |   |   |   |   | m |   |   |   |   |
+            """
+                    o                       n
+                   .e.                     _j_.
+                  /   '.                  /    \
+                 /      q__             /       |
+            a---b       |  >s---f-------g       i---k
+                .       r''     |       .' . .p'|
+                 .      |       t        .     .'
+                   'c---d                  'h'
+                    l                       m
+            """
 
         And the nodes
             | node | highway         |
@@ -420,9 +309,13 @@ Feature: Basic Roundabout
             | nodes   | junction   | name            | oneway |
             | bcdrqeb | roundabout | sheridan circle | yes    |
             | ghi     | roundabout | dupont circle   | yes    |
-            | ijg     | roundabout | dupont circle   | yes    |
+            | ij      | roundabout | dupont circle   | yes    |
+            | jg      | roundabout | dupont circle   | yes    |
             | ab      |            | massachusetts   | no     |
-            | sfgpik  |            | massachusetts   | no     |
+            | gp      |            | massachusetts   | no     |
+            | pi      |            | massachusetts   | no     |
+            | sfg     |            | massachusetts   | no     |
+            | ik      |            | massachusetts   | no     |
             | cl      |            | 23rd street     | no     |
             | oe      |            | r street        | no     |
             | jn      |            | new hampshire   | no     |
@@ -432,47 +325,96 @@ Feature: Basic Roundabout
 
         And the relations
             | type        | way:from | way:to | node:via | restriction   |
-            | restriction | sfgpik   | ijg    | i        | no_left_turn  |
+            | restriction | pi       | ij     | i        | no_left_turn  |
 
         When I route I should get
-            | waypoints | route                                                   | turns                                                     |
-            | a,k       | massachusetts,massachusetts,massachusetts,massachusetts | depart,sheridan circle-exit-2,dupont circle-exit-1,arrive |
+            | waypoints | route                                                   | turns                                              |
+            | a,k       | massachusetts,massachusetts,massachusetts,massachusetts | depart,sheridan circle-exit-2,rotary-exit-1,arrive |
 
-    Scenario: Enter and Exit - Traffic Signals
+    #2856 - http://www.openstreetmap.org/#map=19/47.23318/-1.56563
+    Scenario: Linked Roundabouts
         Given the node map
-            |   |   | a |   |   |
-            |   | i | b | l |   |
-            | h | g |   | c | d |
-            |   | j | e | k |   |
-            |   |   | f |   |   |
+            """
+                                    x
+            u                     r
 
-       And the nodes
-            | node | highway         |
-            | i    | traffic_signals |
-            | j    | traffic_signals |
-            | k    | traffic_signals |
-            | l    | traffic_signals |
+                t
+                              s
+              v     i   h   g
+                                q
 
-       And the ways
-            | nodes     | junction   |
-            | ab        |            |
-            | cd        |            |
-            | ef        |            |
-            | gh        |            |
-            | bigjekclb | roundabout |
+                j               f
 
-       When I route I should get
-           | waypoints | route    | turns                           |
-           | a,d       | ab,cd,cd | depart,roundabout-exit-3,arrive |
-           | a,f       | ab,ef,ef | depart,roundabout-exit-2,arrive |
-           | a,h       | ab,gh,gh | depart,roundabout-exit-1,arrive |
-           | d,f       | cd,ef,ef | depart,roundabout-exit-3,arrive |
-           | d,h       | cd,gh,gh | depart,roundabout-exit-2,arrive |
-           | d,a       | cd,ab,ab | depart,roundabout-exit-1,arrive |
-           | f,h       | ef,gh,gh | depart,roundabout-exit-3,arrive |
-           | f,a       | ef,ab,ab | depart,roundabout-exit-2,arrive |
-           | f,d       | ef,cd,cd | depart,roundabout-exit-1,arrive |
-           | h,a       | gh,ab,ab | depart,roundabout-exit-3,arrive |
-           | h,d       | gh,cd,cd | depart,roundabout-exit-2,arrive |
-           | h,f       | gh,ef,ef | depart,roundabout-exit-1,arrive |
 
+                a               e
+
+
+                    b   c   d   p
+
+              m               n
+                  l
+
+
+
+
+
+
+
+              k
+
+
+
+            w                   o
+            """
+
+        And the ways
+            | nodes | junction   | name | highway   | oneway |
+            | abija | roundabout | egg  | primary   | yes    |
+            | defgd | roundabout | egg  | primary   | yes    |
+            | bcd   | roundabout | egg  | primary   | yes    |
+            | ghi   |            | egg  | primary   | yes    |
+            | amklb |            | ll   | primary   | yes    |
+            | wk    |            | ll   | primary   | no     |
+            | dnope |            | lr   | secondary | yes    |
+            | fqrsg |            | tr   | primary   | yes    |
+            | rx    |            | tr   | primary   | no     |
+            | ituvj |            | tl   | primary   | yes    |
+
+        And the nodes
+            | node | highway  |
+            | c    | give_way |
+            | h    | give_way |
+
+        When I route I should get
+            | waypoints | route            | turns                                                |
+            # since we cannot handle these invalid roundabout tags yet, we cannout output roundabout taggings. This will hopefully change some day
+            #| w,x       | ll,egg,egg,tr,tr | depart,roundabout-exit-1,roundabout-exit-2,arrive       |
+            | w,x       | ll,egg,egg,tr,tr | depart,turn right,continue left,turn straight,arrive |
+
+    Scenario: Use Lane in Roundabout
+        Given the node map
+            """
+                    . i  . . . .. .
+                  .'                '.
+            a - b.                    f - g
+                 .                    |
+                  '. 1               /
+                     '.             /
+                j - - - c .       . e
+                            ' d '
+                                 '  h
+            """
+
+        #using roundabout as name, we can ignore whether we see a roundabout or a rotary here. Cucumber output will be the same
+        And the ways
+            | nodes  | junction   | name          | oneway | turn:lanes:forward    |
+            | ba     |            | left-out      | yes    |                       |
+            | jc     |            | left-in       | yes    |                       |
+            | dh     |            | right-bot-out | yes    |                       |
+            | fg     |            | right-top-out | yes    |                       |
+            | bc     | roundabout | roundabout    | yes    | left;through\|through |
+            | cdefib | roundabout | roundabout    | yes    |                       |
+
+        When I route I should get
+            | waypoints | route                                  | turns                           |
+            | 1,h       | roundabout,right-bot-out,right-bot-out | depart,roundabout-exit-1,arrive |

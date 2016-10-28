@@ -13,9 +13,11 @@
 #include "extractor/original_edge_data.hpp"
 #include "extractor/profile_properties.hpp"
 #include "extractor/query_node.hpp"
+#include "storage/io.hpp"
 #include "storage/storage_config.hpp"
 #include "engine/geospatial_query.hpp"
 #include "util/graph_loader.hpp"
+#include "util/guidance/turn_bearing.hpp"
 #include "util/guidance/turn_lanes.hpp"
 #include "util/io.hpp"
 #include "util/packed_vector.hpp"
@@ -70,23 +72,23 @@ class InternalDataFacade final : public BaseDataFacade
     InternalDataFacade() {}
 
     unsigned m_check_sum;
-    unsigned m_number_of_nodes;
     std::unique_ptr<QueryGraph> m_query_graph;
     std::string m_timestamp;
 
     util::ShM<util::Coordinate, false>::vector m_coordinate_list;
     util::PackedVector<OSMNodeID, false> m_osmnodeid_list;
-    util::ShM<NodeID, false>::vector m_via_node_list;
+    util::ShM<GeometryID, false>::vector m_via_geometry_list;
     util::ShM<unsigned, false>::vector m_name_ID_list;
     util::ShM<extractor::guidance::TurnInstruction, false>::vector m_turn_instruction_list;
     util::ShM<LaneDataID, false>::vector m_lane_data_id;
-    util::ShM<util::guidance::LaneTupelIdPair, false>::vector m_lane_tupel_id_pairs;
+    util::ShM<util::guidance::LaneTupleIdPair, false>::vector m_lane_tuple_id_pairs;
     util::ShM<extractor::TravelMode, false>::vector m_travel_mode_list;
     util::ShM<char, false>::vector m_names_char_list;
     util::ShM<unsigned, false>::vector m_geometry_indices;
-    util::ShM<extractor::CompressedEdgeContainer::CompressedEdge, false>::vector m_geometry_list;
+    util::ShM<NodeID, false>::vector m_geometry_node_list;
+    util::ShM<EdgeWeight, false>::vector m_geometry_fwd_weight_list;
+    util::ShM<EdgeWeight, false>::vector m_geometry_rev_weight_list;
     util::ShM<bool, false>::vector m_is_core_node;
-    util::ShM<unsigned, false>::vector m_segment_weights;
     util::ShM<uint8_t, false>::vector m_datasource_list;
     util::ShM<std::string, false>::vector m_datasource_names;
     util::ShM<std::uint32_t, false>::vector m_lane_description_offsets;
@@ -103,6 +105,9 @@ class InternalDataFacade final : public BaseDataFacade
     util::ShM<BearingClassID, false>::vector m_bearing_class_id_table;
     // entry class IDs by edge based egde
     util::ShM<EntryClassID, false>::vector m_entry_class_id_list;
+    // bearings pre/post turn
+    util::ShM<util::guidance::TurnBearing, false>::vector m_pre_turn_bearing;
+    util::ShM<util::guidance::TurnBearing, false>::vector m_post_turn_bearing;
     // the look-up table for entry classes. An entry class lists the possibility of entry for all
     // available turns. For every turn, there is an associated entry class.
     util::ShM<util::guidance::EntryClass, false>::vector m_entry_class_table;
@@ -118,12 +123,11 @@ class InternalDataFacade final : public BaseDataFacade
         {
             throw util::exception("Could not open " + properties_path.string() + " for reading.");
         }
-
-        in_stream.read(reinterpret_cast<char *>(&m_profile_properties),
-                       sizeof(m_profile_properties));
+        const auto properties_size = storage::io::readPropertiesCount();
+        storage::io::readProperties(in_stream, &m_profile_properties, properties_size);
     }
 
-    void LoadLaneTupelIdPairs(const boost::filesystem::path &lane_data_path)
+    void LoadLaneTupleIdPairs(const boost::filesystem::path &lane_data_path)
     {
         boost::filesystem::ifstream in_stream(lane_data_path);
         if (!in_stream)
@@ -132,82 +136,91 @@ class InternalDataFacade final : public BaseDataFacade
         }
         std::uint64_t size;
         in_stream.read(reinterpret_cast<char *>(&size), sizeof(size));
-        m_lane_tupel_id_pairs.resize(size);
-        in_stream.read(reinterpret_cast<char *>(&m_lane_tupel_id_pairs[0]),
-                       sizeof(m_lane_tupel_id_pairs) * size);
+        m_lane_tuple_id_pairs.resize(size);
+        in_stream.read(reinterpret_cast<char *>(&m_lane_tuple_id_pairs[0]),
+                       sizeof(m_lane_tuple_id_pairs) * size);
     }
 
     void LoadTimestamp(const boost::filesystem::path &timestamp_path)
     {
         util::SimpleLogger().Write() << "Loading Timestamp";
+
         boost::filesystem::ifstream timestamp_stream(timestamp_path);
         if (!timestamp_stream)
         {
             throw util::exception("Could not open " + timestamp_path.string() + " for reading.");
         }
-        getline(timestamp_stream, m_timestamp);
+
+        const auto timestamp_size = storage::io::readNumberOfBytes(timestamp_stream);
+        m_timestamp.resize(timestamp_size);
+        storage::io::readTimestamp(timestamp_stream, &m_timestamp.front(), timestamp_size);
     }
 
     void LoadGraph(const boost::filesystem::path &hsgr_path)
     {
-        util::ShM<QueryGraph::NodeArrayEntry, false>::vector node_list;
-        util::ShM<QueryGraph::EdgeArrayEntry, false>::vector edge_list;
+        boost::filesystem::ifstream hsgr_input_stream(hsgr_path);
+        if (!hsgr_input_stream)
+        {
+            throw util::exception("Could not open " + hsgr_path.string() + " for reading.");
+        }
 
-        util::SimpleLogger().Write() << "loading graph from " << hsgr_path.string();
+        const auto header = storage::io::readHSGRHeader(hsgr_input_stream);
+        m_check_sum = header.checksum;
 
-        m_number_of_nodes = readHSGRFromStream(hsgr_path, node_list, edge_list, &m_check_sum);
+        util::ShM<QueryGraph::NodeArrayEntry, false>::vector node_list(header.number_of_nodes);
+        util::ShM<QueryGraph::EdgeArrayEntry, false>::vector edge_list(header.number_of_edges);
 
-        BOOST_ASSERT_MSG(0 != node_list.size(), "node list empty");
-        // BOOST_ASSERT_MSG(0 != edge_list.size(), "edge list empty");
-        util::SimpleLogger().Write() << "loaded " << node_list.size() << " nodes and "
-                                     << edge_list.size() << " edges";
+        storage::io::readHSGR(hsgr_input_stream,
+                              node_list.data(),
+                              header.number_of_nodes,
+                              edge_list.data(),
+                              header.number_of_edges);
+
         m_query_graph = std::unique_ptr<QueryGraph>(new QueryGraph(node_list, edge_list));
 
-        BOOST_ASSERT_MSG(0 == node_list.size(), "node list not flushed");
-        BOOST_ASSERT_MSG(0 == edge_list.size(), "edge list not flushed");
         util::SimpleLogger().Write() << "Data checksum is " << m_check_sum;
     }
 
-    void LoadNodeAndEdgeInformation(const boost::filesystem::path &nodes_file,
-                                    const boost::filesystem::path &edges_file)
+    void LoadNodeAndEdgeInformation(const boost::filesystem::path &nodes_file_path,
+                                    const boost::filesystem::path &edges_file_path)
     {
-        boost::filesystem::ifstream nodes_input_stream(nodes_file, std::ios::binary);
-
-        extractor::QueryNode current_node;
-        unsigned number_of_coordinates = 0;
-        nodes_input_stream.read((char *)&number_of_coordinates, sizeof(unsigned));
-        m_coordinate_list.resize(number_of_coordinates);
-        m_osmnodeid_list.reserve(number_of_coordinates);
-        for (unsigned i = 0; i < number_of_coordinates; ++i)
+        boost::filesystem::ifstream nodes_input_stream(nodes_file_path, std::ios::binary);
+        if (!nodes_input_stream)
         {
-            nodes_input_stream.read((char *)&current_node, sizeof(extractor::QueryNode));
-            m_coordinate_list[i] = util::Coordinate(current_node.lon, current_node.lat);
-            m_osmnodeid_list.push_back(current_node.node_id);
-            BOOST_ASSERT(m_coordinate_list[i].IsValid());
+            throw util::exception("Could not open " + nodes_file_path.string() + " for reading.");
         }
 
-        boost::filesystem::ifstream edges_input_stream(edges_file, std::ios::binary);
-        unsigned number_of_edges = 0;
-        edges_input_stream.read((char *)&number_of_edges, sizeof(unsigned));
-        m_via_node_list.resize(number_of_edges);
+        const auto number_of_coordinates = storage::io::readElementCount(nodes_input_stream);
+        m_coordinate_list.resize(number_of_coordinates);
+        m_osmnodeid_list.reserve(number_of_coordinates);
+        storage::io::readNodes(
+            nodes_input_stream, m_coordinate_list.data(), m_osmnodeid_list, number_of_coordinates);
+
+        boost::filesystem::ifstream edges_input_stream(edges_file_path, std::ios::binary);
+        if (!edges_input_stream)
+        {
+            throw util::exception("Could not open " + edges_file_path.string() + " for reading.");
+        }
+        const auto number_of_edges = storage::io::readElementCount(edges_input_stream);
+        m_via_geometry_list.resize(number_of_edges);
         m_name_ID_list.resize(number_of_edges);
         m_turn_instruction_list.resize(number_of_edges);
         m_lane_data_id.resize(number_of_edges);
         m_travel_mode_list.resize(number_of_edges);
         m_entry_class_id_list.resize(number_of_edges);
+        m_pre_turn_bearing.resize(number_of_edges);
+        m_post_turn_bearing.resize(number_of_edges);
 
-        extractor::OriginalEdgeData current_edge_data;
-        for (unsigned i = 0; i < number_of_edges; ++i)
-        {
-            edges_input_stream.read((char *)&(current_edge_data),
-                                    sizeof(extractor::OriginalEdgeData));
-            m_via_node_list[i] = current_edge_data.via_node;
-            m_name_ID_list[i] = current_edge_data.name_id;
-            m_turn_instruction_list[i] = current_edge_data.turn_instruction;
-            m_lane_data_id[i] = current_edge_data.lane_data_id;
-            m_travel_mode_list[i] = current_edge_data.travel_mode;
-            m_entry_class_id_list[i] = current_edge_data.entry_classid;
-        }
+        storage::io::readEdges(edges_input_stream,
+                               m_via_geometry_list.data(),
+                               m_name_ID_list.data(),
+                               m_turn_instruction_list.data(),
+                               m_lane_data_id.data(),
+                               m_travel_mode_list.data(),
+                               m_entry_class_id_list.data(),
+                               m_pre_turn_bearing.data(),
+                               m_post_turn_bearing.data(),
+                               number_of_edges);
     }
 
     void LoadCoreInformation(const boost::filesystem::path &core_data_file)
@@ -251,13 +264,20 @@ class InternalDataFacade final : public BaseDataFacade
         geometry_stream.read((char *)&number_of_compressed_geometries, sizeof(unsigned));
 
         BOOST_ASSERT(m_geometry_indices.back() == number_of_compressed_geometries);
-        m_geometry_list.resize(number_of_compressed_geometries);
+        m_geometry_node_list.resize(number_of_compressed_geometries);
+        m_geometry_fwd_weight_list.resize(number_of_compressed_geometries);
+        m_geometry_rev_weight_list.resize(number_of_compressed_geometries);
 
         if (number_of_compressed_geometries > 0)
         {
-            geometry_stream.read((char *)&(m_geometry_list[0]),
-                                 number_of_compressed_geometries *
-                                     sizeof(extractor::CompressedEdgeContainer::CompressedEdge));
+            geometry_stream.read((char *)&(m_geometry_node_list[0]),
+                                 number_of_compressed_geometries * sizeof(NodeID));
+
+            geometry_stream.read((char *)&(m_geometry_fwd_weight_list[0]),
+                                 number_of_compressed_geometries * sizeof(EdgeWeight));
+
+            geometry_stream.read((char *)&(m_geometry_rev_weight_list[0]),
+                                 number_of_compressed_geometries * sizeof(EdgeWeight));
         }
     }
 
@@ -272,14 +292,12 @@ class InternalDataFacade final : public BaseDataFacade
         }
         BOOST_ASSERT(datasources_stream);
 
-        std::uint64_t number_of_datasources = 0;
-        datasources_stream.read(reinterpret_cast<char *>(&number_of_datasources),
-                                sizeof(number_of_datasources));
+        const auto number_of_datasources = storage::io::readElementCount(datasources_stream);
         if (number_of_datasources > 0)
         {
             m_datasource_list.resize(number_of_datasources);
-            datasources_stream.read(reinterpret_cast<char *>(&(m_datasource_list[0])),
-                                    number_of_datasources * sizeof(uint8_t));
+            storage::io::readDatasourceIndexes(
+                datasources_stream, &m_datasource_list.front(), number_of_datasources);
         }
 
         boost::filesystem::ifstream datasourcenames_stream(datasource_names_file, std::ios::binary);
@@ -289,10 +307,16 @@ class InternalDataFacade final : public BaseDataFacade
                                   " for reading!");
         }
         BOOST_ASSERT(datasourcenames_stream);
-        std::string name;
-        while (std::getline(datasourcenames_stream, name))
+
+        const auto datasource_names_data = storage::io::readDatasourceNames(datasourcenames_stream);
+        m_datasource_names.resize(datasource_names_data.lengths.size());
+        for (std::size_t i = 0; i < datasource_names_data.lengths.size(); ++i)
         {
-            m_datasource_names.push_back(std::move(name));
+            auto name_begin =
+                datasource_names_data.names.begin() + datasource_names_data.offsets[i];
+            auto name_end = datasource_names_data.names.begin() + datasource_names_data.offsets[i] +
+                            datasource_names_data.lengths[i];
+            m_datasource_names[i] = std::string(name_begin, name_end);
         }
     }
 
@@ -360,7 +384,7 @@ class InternalDataFacade final : public BaseDataFacade
             std::vector<util::guidance::BearingClass> bearing_classes;
             // and the actual bearing values
             std::uint64_t num_bearings;
-            intersection_stream.read(reinterpret_cast<char*>(&num_bearings),sizeof(num_bearings));
+            intersection_stream.read(reinterpret_cast<char *>(&num_bearings), sizeof(num_bearings));
             m_bearing_values_table.resize(num_bearings);
             intersection_stream.read(reinterpret_cast<char *>(&m_bearing_values_table[0]),
                                      sizeof(m_bearing_values_table[0]) * num_bearings);
@@ -426,7 +450,7 @@ class InternalDataFacade final : public BaseDataFacade
         LoadIntersectionClasses(config.intersection_class_path);
 
         util::SimpleLogger().Write() << "Loading Lane Data Pairs";
-        LoadLaneTupelIdPairs(config.turn_lane_data_path);
+        LoadLaneTupleIdPairs(config.turn_lane_data_path);
     }
 
     // search graph access
@@ -470,6 +494,13 @@ class InternalDataFacade final : public BaseDataFacade
     FindEdgeIndicateIfReverse(const NodeID from, const NodeID to, bool &result) const override final
     {
         return m_query_graph->FindEdgeIndicateIfReverse(from, to, result);
+    }
+
+    EdgeID FindSmallestEdge(const NodeID from,
+                            const NodeID to,
+                            std::function<bool(EdgeData)> filter) const override final
+    {
+        return m_query_graph->FindSmallestEdge(from, to, filter);
     }
 
     // node and edge information access
@@ -636,6 +667,15 @@ class InternalDataFacade final : public BaseDataFacade
         return result;
     }
 
+    std::string GetRefForID(const unsigned name_id) const override final
+    {
+        // We store the ref after the name, destination and pronunciation of a street.
+        // We do this to get around the street length limit of 255 which would hit
+        // if we concatenate these. Order (see extractor_callbacks):
+        // name (0), destination (1), pronunciation (2), ref (3)
+        return GetNameForID(name_id + 3);
+    }
+
     std::string GetPronunciationForID(const unsigned name_id) const override final
     {
         // We store the pronunciation after the name and destination of a street.
@@ -654,9 +694,9 @@ class InternalDataFacade final : public BaseDataFacade
         return GetNameForID(name_id + 1);
     }
 
-    virtual unsigned GetGeometryIndexForEdgeID(const unsigned id) const override final
+    virtual GeometryID GetGeometryIndexForEdgeID(const unsigned id) const override final
     {
-        return m_via_node_list.at(id);
+        return m_via_geometry_list.at(id);
     }
 
     virtual std::size_t GetCoreSize() const override final { return m_is_core_node.size(); }
@@ -673,48 +713,121 @@ class InternalDataFacade final : public BaseDataFacade
         }
     }
 
-    virtual void GetUncompressedGeometry(const EdgeID id,
-                                         std::vector<NodeID> &result_nodes) const override final
+    virtual std::vector<NodeID> GetUncompressedForwardGeometry(const EdgeID id) const override final
     {
+        /*
+         * NodeID's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_node_list vector. For
+         * forward geometries of bi-directional edges, edges 2 to
+         * n of that edge need to be read.
+         */
         const unsigned begin = m_geometry_indices.at(id);
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_nodes.clear();
-        result_nodes.reserve(end - begin);
-        std::for_each(m_geometry_list.begin() + begin,
-                      m_geometry_list.begin() + end,
-                      [&](const osrm::extractor::CompressedEdgeContainer::CompressedEdge &edge) {
-                          result_nodes.emplace_back(edge.node_id);
-                      });
+        std::vector<NodeID> result_nodes;
+
+        result_nodes.resize(end - begin);
+
+        std::copy(m_geometry_node_list.begin() + begin,
+                  m_geometry_node_list.begin() + end,
+                  result_nodes.begin());
+
+        return result_nodes;
     }
 
-    virtual void
-    GetUncompressedWeights(const EdgeID id,
-                           std::vector<EdgeWeight> &result_weights) const override final
+    virtual std::vector<NodeID> GetUncompressedReverseGeometry(const EdgeID id) const override final
     {
+        /*
+         * NodeID's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_node_list vector.
+         * */
         const unsigned begin = m_geometry_indices.at(id);
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_weights.clear();
-        result_weights.reserve(end - begin);
-        std::for_each(m_geometry_list.begin() + begin,
-                      m_geometry_list.begin() + end,
-                      [&](const osrm::extractor::CompressedEdgeContainer::CompressedEdge &edge) {
-                          result_weights.emplace_back(edge.weight);
-                      });
+        std::vector<NodeID> result_nodes;
+
+        result_nodes.resize(end - begin);
+
+        std::copy(m_geometry_node_list.rbegin() + (m_geometry_node_list.size() - end),
+                  m_geometry_node_list.rbegin() + (m_geometry_node_list.size() - begin),
+                  result_nodes.begin());
+
+        return result_nodes;
+    }
+
+    virtual std::vector<EdgeWeight>
+    GetUncompressedForwardWeights(const EdgeID id) const override final
+    {
+        /*
+         * EdgeWeights's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_fwd_weight_list vector.
+         * */
+        const unsigned begin = m_geometry_indices.at(id) + 1;
+        const unsigned end = m_geometry_indices.at(id + 1);
+
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(end - begin);
+
+        std::copy(m_geometry_fwd_weight_list.begin() + begin,
+                  m_geometry_fwd_weight_list.begin() + end,
+                  result_weights.begin());
+
+        return result_weights;
+    }
+
+    virtual std::vector<EdgeWeight>
+    GetUncompressedReverseWeights(const EdgeID id) const override final
+    {
+        /*
+         * EdgeWeights for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_rev_weight_list vector. For
+         * reverse weights of bi-directional edges, edges 1 to
+         * n-1 of that edge need to be read in reverse.
+         */
+        const unsigned begin = m_geometry_indices.at(id);
+        const unsigned end = m_geometry_indices.at(id + 1) - 1;
+
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(end - begin);
+
+        std::copy(m_geometry_rev_weight_list.rbegin() + (m_geometry_rev_weight_list.size() - end),
+                  m_geometry_rev_weight_list.rbegin() + (m_geometry_rev_weight_list.size() - begin),
+                  result_weights.begin());
+
+        return result_weights;
     }
 
     // Returns the data source ids that were used to supply the edge
     // weights.
-    virtual void
-    GetUncompressedDatasources(const EdgeID id,
-                               std::vector<uint8_t> &result_datasources) const override final
+    virtual std::vector<uint8_t>
+    GetUncompressedForwardDatasources(const EdgeID id) const override final
     {
-        const unsigned begin = m_geometry_indices.at(id);
+        /*
+         * Data sources for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_list vector. For
+         * forward datasources of bi-directional edges, edges 2 to
+         * n of that edge need to be read.
+         */
+        const unsigned begin = m_geometry_indices.at(id) + 1;
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_datasources.clear();
-        result_datasources.reserve(end - begin);
+        std::vector<uint8_t> result_datasources;
+        result_datasources.resize(end - begin);
 
         // If there was no datasource info, return an array of 0's.
         if (m_datasource_list.empty())
@@ -726,11 +839,50 @@ class InternalDataFacade final : public BaseDataFacade
         }
         else
         {
-            std::for_each(
-                m_datasource_list.begin() + begin,
-                m_datasource_list.begin() + end,
-                [&](const uint8_t &datasource_id) { result_datasources.push_back(datasource_id); });
+            std::copy(m_datasource_list.begin() + begin,
+                      m_datasource_list.begin() + end,
+                      result_datasources.begin());
         }
+
+        return result_datasources;
+    }
+
+    // Returns the data source ids that were used to supply the edge
+    // weights.
+    virtual std::vector<uint8_t>
+    GetUncompressedReverseDatasources(const EdgeID id) const override final
+    {
+        /*
+         * Datasources for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_list vector. For
+         * reverse datasources of bi-directional edges, edges 1 to
+         * n-1 of that edge need to be read in reverse.
+         */
+        const unsigned begin = m_geometry_indices.at(id);
+        const unsigned end = m_geometry_indices.at(id + 1) - 1;
+
+        std::vector<uint8_t> result_datasources;
+        result_datasources.resize(end - begin);
+
+        // If there was no datasource info, return an array of 0's.
+        if (m_datasource_list.empty())
+        {
+            for (unsigned i = 0; i < end - begin; ++i)
+            {
+                result_datasources.push_back(0);
+            }
+        }
+        else
+        {
+            std::copy(m_datasource_list.rbegin() + (m_datasource_list.size() - end),
+                      m_datasource_list.rbegin() + (m_datasource_list.size() - begin),
+                      result_datasources.begin());
+        }
+
+        return result_datasources;
     }
 
     virtual std::string GetDatasourceName(const uint8_t datasource_name_id) const override final
@@ -773,6 +925,15 @@ class InternalDataFacade final : public BaseDataFacade
         return m_entry_class_id_list.at(eid);
     }
 
+    util::guidance::TurnBearing PreTurnBearing(const EdgeID eid) const override final
+    {
+        return m_pre_turn_bearing.at(eid);
+    }
+    util::guidance::TurnBearing PostTurnBearing(const EdgeID eid) const override final
+    {
+        return m_post_turn_bearing.at(eid);
+    }
+
     util::guidance::EntryClass GetEntryClass(const EntryClassID entry_class_id) const override final
     {
         return m_entry_class_table.at(entry_class_id);
@@ -783,10 +944,10 @@ class InternalDataFacade final : public BaseDataFacade
         return m_lane_data_id[id] != INVALID_LANE_DATAID;
     }
 
-    util::guidance::LaneTupelIdPair GetLaneData(const EdgeID id) const override final
+    util::guidance::LaneTupleIdPair GetLaneData(const EdgeID id) const override final
     {
         BOOST_ASSERT(hasLaneData(id));
-        return m_lane_tupel_id_pairs[m_lane_data_id[id]];
+        return m_lane_tuple_id_pairs[m_lane_data_id[id]];
     }
 
     extractor::guidance::TurnLaneDescription

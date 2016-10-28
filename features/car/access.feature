@@ -5,7 +5,7 @@ Feature: Car - Restricted access
     Background:
         Given the profile "car"
 
-    Scenario: Car - Access tag hierarchy    on ways
+    Scenario: Car - Access tag hierarchy on ways
         Then routability should be
             | access | vehicle | motor_vehicle | motorcar | bothw |
             |        |         |               |          | x     |
@@ -148,3 +148,44 @@ Feature: Car - Restricted access
             | primary |      |         | no  |           | x     |
             | runway  |      |         |     | yes       |       |
             | primary |      |         |     | no        | x     |
+
+    Scenario: Car - only designated HOV ways are ignored by default
+        Then routability should be
+            | highway | hov        | bothw |
+            | primary | designated |       |
+            | primary | yes        | x     |
+            | primary | no         | x     |
+
+    Scenario: Car - a way with all lanes HOV-designated is inaccessible by default (similar to hov=designated)
+        Then routability should be
+            | highway | hov:lanes:forward      | hov:lanes:backward     | hov:lanes              | oneway | forw | backw |
+            | primary | designated             | designated             |                        |        |      |       |
+            | primary |                        | designated             |                        |        | x    |       |
+            | primary | designated             |                        |                        |        |      | x     |
+            | primary | designated\|designated | designated\|designated |                        |        |      |       |
+            | primary | designated\|no         | designated\|no         |                        |        | x    | x     |
+            | primary | yes\|no                | yes\|no                |                        |        | x    | x     |
+            | primary |                        |                        |                        |        | x    | x     |
+            | primary | designated             |                        |                        | -1     |      |       |
+            | primary |                        | designated             |                        | -1     |      | x     |
+            | primary |                        |                        | designated             | yes    |      |       |
+            | primary |                        |                        | designated             | -1     |      |       |
+            | primary |                        |                        | designated\|           | yes    | x    |       |
+            | primary |                        |                        | designated\|           | -1     |      | x     |
+            | primary |                        |                        | designated\|designated | yes    |      |       |
+            | primary |                        |                        | designated\|designated | -1     |      |       |
+            | primary |                        |                        | designated\|yes        | yes    | x    |       |
+            | primary |                        |                        | designated\|no         | -1     |      | x     |
+
+     Scenario: Car - these toll roads always work
+        Then routability should be
+            | highway | toll        | bothw |
+            | primary | no          | x     |
+            | primary | snowmobile  | x     |
+
+     # To test this we need issue #2781
+     @todo
+     Scenario: Car - only toll=yes ways are ignored by default
+        Then routability should be
+            | highway | toll        | bothw |
+            | primary | yes         |       |

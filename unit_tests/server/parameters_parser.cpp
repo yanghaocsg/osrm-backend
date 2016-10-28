@@ -35,6 +35,9 @@ template <typename ParameterT> std::size_t testInvalidOptions(std::string option
 
 BOOST_AUTO_TEST_CASE(invalid_route_urls)
 {
+    BOOST_CHECK_EQUAL(testInvalidOptions<RouteParameters>("a;3,4"), 0UL);
+    BOOST_CHECK_EQUAL(testInvalidOptions<RouteParameters>("120;3,4"), 3UL);
+    BOOST_CHECK_EQUAL(testInvalidOptions<RouteParameters>("90000000,2;3,4"), 0UL);
     BOOST_CHECK_EQUAL(testInvalidOptions<RouteParameters>("1,2;3,4?overview=false&bla=foo"), 22UL);
     BOOST_CHECK_EQUAL(testInvalidOptions<RouteParameters>("1,2;3,4?overview=false&bearings=foo"),
                       32UL);
@@ -72,6 +75,15 @@ BOOST_AUTO_TEST_CASE(invalid_table_urls)
         testInvalidOptions<TableParameters>("1,2;3,4?sources=1&destinations=1&bla=foo"), 32UL);
     BOOST_CHECK_EQUAL(testInvalidOptions<TableParameters>("1,2;3,4?sources=foo"), 16UL);
     BOOST_CHECK_EQUAL(testInvalidOptions<TableParameters>("1,2;3,4?destinations=foo"), 21UL);
+}
+
+BOOST_AUTO_TEST_CASE(valid_route_hint)
+{
+    auto hint = engine::Hint::FromBase64(
+        "XAYAgP___3-QAAAABAAAACEAAAA_AAAAHgAAAHsFAAAUAAAAaWhxALeCmwI7aHEAy4KbAgUAAQE0h8Z2");
+    BOOST_CHECK_EQUAL(
+        hint.phantom.input_location,
+        util::Coordinate(util::FloatLongitude{7.432251}, util::FloatLatitude{43.745995}));
 }
 
 BOOST_AUTO_TEST_CASE(valid_route_urls)
@@ -137,15 +149,12 @@ BOOST_AUTO_TEST_CASE(valid_route_urls)
     CHECK_EQUAL_RANGE(reference_3.hints, result_3->hints);
 
     std::vector<boost::optional<engine::Hint>> hints_4 = {
-        engine::Hint::FromBase64("DAIAgP___"
-                                 "38AAAAAAAAAAAIAAAAAAAAAEAAAAOgDAAD0AwAAGwAAAOUacQBQP5sCshpxAB0_"
-                                 "mwIAAAEBl-Umfg=="),
-        engine::Hint::FromBase64("cgAAgP___"
-                                 "39jAAAADgAAACIAAABeAAAAkQAAANoDAABOAgAAGwAAAFVGcQCiRJsCR0VxAOZFmw"
-                                 "IFAAEBl-Umfg=="),
-        engine::Hint::FromBase64("3gAAgP___"
-                                 "39KAAAAHgAAACEAAAAAAAAAGAAAAE0BAABOAQAAGwAAAIAzcQBkUJsC1zNxAHBQmw"
-                                 "IAAAEBl-Umfg==")};
+        engine::Hint::FromBase64(
+            "XAYAgP___3-QAAAABAAAACEAAAA_AAAAHgAAAHsFAAAUAAAAaWhxALeCmwI7aHEAy4KbAgUAAQE0h8Z2"),
+        engine::Hint::FromBase64(
+            "lgQAgP___3-QAAAADwAAABMAAAAoAAAALAAAADQAAAAUAAAAmWFxAL1zmwLcYXEAu3ObAgQAAQE0h8Z2"),
+        engine::Hint::FromBase64(
+            "OAUAgMUFAIAAAAAADwAAAAIAAAAAAAAAnQAAALwEAAAUAAAAgz5xAE9WmwKIPnEAUFabAgAAAQE0h8Z2")};
     RouteParameters reference_4{false,
                                 false,
                                 false,
@@ -158,9 +167,9 @@ BOOST_AUTO_TEST_CASE(valid_route_urls)
                                 std::vector<boost::optional<engine::Bearing>>{}};
     auto result_4 = parseParameters<RouteParameters>(
         "1,2;3,4?steps=false&hints="
-        "DAIAgP___38AAAAAAAAAAAIAAAAAAAAAEAAAAOgDAAD0AwAAGwAAAOUacQBQP5sCshpxAB0_mwIAAAEBl-Umfg==;"
-        "cgAAgP___39jAAAADgAAACIAAABeAAAAkQAAANoDAABOAgAAGwAAAFVGcQCiRJsCR0VxAOZFmwIFAAEBl-Umfg==;"
-        "3gAAgP___39KAAAAHgAAACEAAAAAAAAAGAAAAE0BAABOAQAAGwAAAIAzcQBkUJsC1zNxAHBQmwIAAAEBl-Umfg==");
+        "XAYAgP___3-QAAAABAAAACEAAAA_AAAAHgAAAHsFAAAUAAAAaWhxALeCmwI7aHEAy4KbAgUAAQE0h8Z2;"
+        "lgQAgP___3-QAAAADwAAABMAAAAoAAAALAAAADQAAAAUAAAAmWFxAL1zmwLcYXEAu3ObAgQAAQE0h8Z2;"
+        "OAUAgMUFAIAAAAAADwAAAAIAAAAAAAAAnQAAALwEAAAUAAAAgz5xAE9WmwKIPnEAUFabAgAAAQE0h8Z2");
     BOOST_CHECK(result_4);
     BOOST_CHECK_EQUAL(reference_4.steps, result_4->steps);
     BOOST_CHECK_EQUAL(reference_4.alternatives, result_4->alternatives);
@@ -255,13 +264,11 @@ BOOST_AUTO_TEST_CASE(valid_route_urls)
                                               {util::FloatLongitude{5}, util::FloatLatitude{6}},
                                               {util::FloatLongitude{7}, util::FloatLatitude{8}}};
     std::vector<boost::optional<engine::Hint>> hints_10 = {
-        engine::Hint::FromBase64("DAIAgP___"
-                                 "38AAAAAAAAAAAIAAAAAAAAAEAAAAOgDAAD0AwAAGwAAAOUacQBQP5sCshpxAB0_"
-                                 "mwIAAAEBl-Umfg=="),
+        engine::Hint::FromBase64(
+            "XAYAgP___3-QAAAABAAAACEAAAA_AAAAHgAAAHsFAAAUAAAAaWhxALeCmwI7aHEAy4KbAgUAAQE0h8Z2"),
         boost::none,
-        engine::Hint::FromBase64("cgAAgP___"
-                                 "39jAAAADgAAACIAAABeAAAAkQAAANoDAABOAgAAGwAAAFVGcQCiRJsCR0VxAOZFmw"
-                                 "IFAAEBl-Umfg=="),
+        engine::Hint::FromBase64(
+            "lgQAgP___3-QAAAADwAAABMAAAAoAAAALAAAADQAAAAUAAAAmWFxAL1zmwLcYXEAu3ObAgQAAQE0h8Z2"),
         boost::none};
     RouteParameters reference_10{false,
                                  false,
@@ -275,8 +282,8 @@ BOOST_AUTO_TEST_CASE(valid_route_urls)
                                  std::vector<boost::optional<engine::Bearing>>{}};
     auto result_10 = parseParameters<RouteParameters>(
         "1,2;3,4;5,6;7,8?steps=false&hints="
-        "DAIAgP___38AAAAAAAAAAAIAAAAAAAAAEAAAAOgDAAD0AwAAGwAAAOUacQBQP5sCshpxAB0_mwIAAAEBl-Umfg==;;"
-        "cgAAgP___39jAAAADgAAACIAAABeAAAAkQAAANoDAABOAgAAGwAAAFVGcQCiRJsCR0VxAOZFmwIFAAEBl-Umfg=="
+        "XAYAgP___3-QAAAABAAAACEAAAA_AAAAHgAAAHsFAAAUAAAAaWhxALeCmwI7aHEAy4KbAgUAAQE0h8Z2;;"
+        "lgQAgP___3-QAAAADwAAABMAAAAoAAAALAAAADQAAAAUAAAAmWFxAL1zmwLcYXEAu3ObAgQAAQE0h8Z2"
         ";");
     BOOST_CHECK(result_10);
     BOOST_CHECK_EQUAL(reference_10.steps, result_10->steps);
@@ -376,10 +383,22 @@ BOOST_AUTO_TEST_CASE(valid_nearest_urls)
     CHECK_EQUAL_RANGE(reference_2.coordinates, result_2->coordinates);
 }
 
-BOOST_AUTO_TEST_CASE(valid_tile_urls)
+BOOST_AUTO_TEST_CASE(invalid_tile_urls)
 {
     TileParameters reference_1{1, 2, 3};
     auto result_1 = parseParameters<TileParameters>("tile(1,2,3).mvt");
+    BOOST_CHECK(result_1);
+    BOOST_CHECK(!result_1->IsValid());
+    BOOST_CHECK_EQUAL(reference_1.x, result_1->x);
+    BOOST_CHECK_EQUAL(reference_1.y, result_1->y);
+    BOOST_CHECK_EQUAL(reference_1.z, result_1->z);
+}
+
+BOOST_AUTO_TEST_CASE(valid_tile_urls)
+{
+    TileParameters reference_1{1, 2, 12};
+    auto result_1 = parseParameters<TileParameters>("tile(1,2,12).mvt");
+    BOOST_CHECK(result_1->IsValid());
     BOOST_CHECK(result_1);
     BOOST_CHECK_EQUAL(reference_1.x, result_1->x);
     BOOST_CHECK_EQUAL(reference_1.y, result_1->y);

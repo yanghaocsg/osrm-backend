@@ -10,7 +10,6 @@
 #include "extractor/restriction_parser.hpp"
 #include "util/exception.hpp"
 #include "util/lua_util.hpp"
-#include "util/make_unique.hpp"
 #include "util/simple_logger.hpp"
 #include "util/typedefs.hpp"
 
@@ -22,6 +21,7 @@
 
 #include <tbb/parallel_for.h>
 
+#include <memory>
 #include <sstream>
 
 namespace osrm
@@ -82,6 +82,8 @@ void LuaScriptingEnvironment::InitContext(LuaScriptingContext &context)
         [luabind::def("durationIsValid", durationIsValid),
          luabind::def("parseDuration", parseDuration),
          luabind::def("trimLaneString", trimLaneString),
+         luabind::def("applyAccessTokens", applyAccessTokens),
+         luabind::def("canonicalizeStringList", canonicalizeStringList),
          luabind::class_<TravelMode>("mode").enum_(
              "enums")[luabind::value("inaccessible", TRAVEL_MODE_INACCESSIBLE),
                       luabind::value("driving", TRAVEL_MODE_DRIVING),
@@ -95,6 +97,24 @@ void LuaScriptingEnvironment::InitContext(LuaScriptingContext &context)
                       luabind::value("river_up", TRAVEL_MODE_RIVER_UP),
                       luabind::value("river_down", TRAVEL_MODE_RIVER_DOWN),
                       luabind::value("route", TRAVEL_MODE_ROUTE)],
+
+         luabind::class_<extractor::guidance::RoadPriorityClass::Enum>("road_priority_class")
+             .enum_("enums")
+                 [luabind::value("motorway", extractor::guidance::RoadPriorityClass::MOTORWAY),
+                  luabind::value("trunk", extractor::guidance::RoadPriorityClass::TRUNK),
+                  luabind::value("primary", extractor::guidance::RoadPriorityClass::PRIMARY),
+                  luabind::value("secondary", extractor::guidance::RoadPriorityClass::SECONDARY),
+                  luabind::value("tertiary", extractor::guidance::RoadPriorityClass::TERTIARY),
+                  luabind::value("main_residential",
+                                 extractor::guidance::RoadPriorityClass::MAIN_RESIDENTIAL),
+                  luabind::value("side_residential",
+                                 extractor::guidance::RoadPriorityClass::SIDE_RESIDENTIAL),
+                  luabind::value("link_road", extractor::guidance::RoadPriorityClass::LINK_ROAD),
+                  luabind::value("bike_path", extractor::guidance::RoadPriorityClass::BIKE_PATH),
+                  luabind::value("foot_path", extractor::guidance::RoadPriorityClass::FOOT_PATH),
+                  luabind::value("connectivity",
+                                 extractor::guidance::RoadPriorityClass::CONNECTIVITY)],
+
          luabind::class_<SourceContainer>("sources")
              .def(luabind::constructor<>())
              .def("load", &SourceContainer::LoadRasterSource)
@@ -113,7 +133,8 @@ void LuaScriptingEnvironment::InitContext(LuaScriptingContext &context)
                        &ProfileProperties::SetUturnPenalty)
              .def_readwrite("use_turn_restrictions", &ProfileProperties::use_turn_restrictions)
              .def_readwrite("continue_straight_at_waypoint",
-                            &ProfileProperties::continue_straight_at_waypoint),
+                            &ProfileProperties::continue_straight_at_waypoint)
+             .def_readwrite("left_hand_driving", &ProfileProperties::left_hand_driving),
 
          luabind::class_<std::vector<std::string>>("vector").def(
              "Add",
@@ -135,11 +156,30 @@ void LuaScriptingEnvironment::InitContext(LuaScriptingContext &context)
              .def_readwrite("traffic_lights", &ExtractionNode::traffic_lights)
              .def_readwrite("barrier", &ExtractionNode::barrier),
 
+         // road classification to be set in profile
+         luabind::class_<guidance::RoadClassification>("RoadClassification")
+             .property("motorway_class",
+                       &guidance::RoadClassification::IsMotorwayClass,
+                       &guidance::RoadClassification::SetMotorwayFlag)
+             .property("link_class",
+                       &guidance::RoadClassification::IsLinkClass,
+                       &guidance::RoadClassification::SetLinkClass)
+             .property("may_be_ignored",
+                       &guidance::RoadClassification::IsLowPriorityRoadClass,
+                       &guidance::RoadClassification::SetLowPriorityFlag)
+             .property("road_priority_class",
+                       &guidance::RoadClassification::GetClass,
+                       &guidance::RoadClassification::SetClass)
+             .property("num_lanes",
+                       &guidance::RoadClassification::GetNumberOfLanes,
+                       &guidance::RoadClassification::SetNumberOfLanes),
+
          luabind::class_<ExtractionWay>("ResultWay")
              // .def(luabind::constructor<>())
              .def_readwrite("forward_speed", &ExtractionWay::forward_speed)
              .def_readwrite("backward_speed", &ExtractionWay::backward_speed)
              .def_readwrite("name", &ExtractionWay::name)
+             .def_readwrite("ref", &ExtractionWay::ref)
              .def_readwrite("pronunciation", &ExtractionWay::pronunciation)
              .def_readwrite("destinations", &ExtractionWay::destinations)
              .def_readwrite("roundabout", &ExtractionWay::roundabout)
@@ -148,6 +188,7 @@ void LuaScriptingEnvironment::InitContext(LuaScriptingContext &context)
              .def_readwrite("duration", &ExtractionWay::duration)
              .def_readwrite("turn_lanes_forward", &ExtractionWay::turn_lanes_forward)
              .def_readwrite("turn_lanes_backward", &ExtractionWay::turn_lanes_backward)
+             .def_readwrite("road_classification", &ExtractionWay::road_classification)
              .property(
                  "forward_mode", &ExtractionWay::get_forward_mode, &ExtractionWay::set_forward_mode)
              .property("backward_mode",
@@ -210,7 +251,7 @@ LuaScriptingContext &LuaScriptingEnvironment::GetLuaContext()
     auto &ref = script_contexts.local(initialized);
     if (!initialized)
     {
-        ref = util::make_unique<LuaScriptingContext>();
+        ref = std::make_unique<LuaScriptingContext>();
         InitContext(*ref);
     }
     luabind::set_pcall_callback(&luaErrorCallback);
@@ -290,18 +331,17 @@ std::vector<std::string> LuaScriptingEnvironment::GetNameSuffixList()
     return suffixes_vector;
 }
 
-std::vector<std::string> LuaScriptingEnvironment::GetExceptions()
+std::vector<std::string> LuaScriptingEnvironment::GetRestrictions()
 {
     auto &context = GetLuaContext();
     BOOST_ASSERT(context.state != nullptr);
-    std::vector<std::string> restriction_exceptions;
-    if (util::luaFunctionExists(context.state, "get_exceptions"))
+    std::vector<std::string> restrictions;
+    if (util::luaFunctionExists(context.state, "get_restrictions"))
     {
         // get list of turn restriction exceptions
-        luabind::call_function<void>(
-            context.state, "get_exceptions", boost::ref(restriction_exceptions));
+        luabind::call_function<void>(context.state, "get_restrictions", boost::ref(restrictions));
     }
-    return restriction_exceptions;
+    return restrictions;
 }
 
 void LuaScriptingEnvironment::SetupSources()

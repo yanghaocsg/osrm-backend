@@ -48,12 +48,12 @@ class LuaScriptingEnvironment final : public ScriptingEnvironment
     explicit LuaScriptingEnvironment(const std::string &file_name);
     ~LuaScriptingEnvironment() override = default;
 
-    const ProfileProperties& GetProfileProperties() override;
+    const ProfileProperties &GetProfileProperties() override;
 
     LuaScriptingContext &GetLuaContext();
 
     std::vector<std::string> GetNameSuffixList() override;
-    std::vector<std::string> GetExceptions() override;
+    std::vector<std::string> GetRestrictions() override;
     void SetupSources() override;
     int32_t GetTurnPenalty(double angle) override;
     void ProcessSegment(const osrm::util::Coordinate &source,

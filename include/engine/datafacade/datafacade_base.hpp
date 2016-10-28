@@ -8,10 +8,13 @@
 #include "extractor/external_memory_node.hpp"
 #include "extractor/guidance/turn_instruction.hpp"
 #include "extractor/guidance/turn_lane_types.hpp"
+#include "extractor/original_edge_data.hpp"
 #include "engine/phantom_node.hpp"
 #include "util/exception.hpp"
 #include "util/guidance/bearing_class.hpp"
 #include "util/guidance/entry_class.hpp"
+#include "util/guidance/turn_bearing.hpp"
+#include "util/guidance/turn_lanes.hpp"
 #include "util/integer_range.hpp"
 #include "util/string_util.hpp"
 #include "util/typedefs.hpp"
@@ -66,24 +69,30 @@ class BaseDataFacade
     virtual EdgeID
     FindEdgeIndicateIfReverse(const NodeID from, const NodeID to, bool &result) const = 0;
 
+    virtual EdgeID FindSmallestEdge(const NodeID from,
+                                    const NodeID to,
+                                    const std::function<bool(EdgeData)> filter) const = 0;
+
     // node and edge information access
     virtual util::Coordinate GetCoordinateOfNode(const unsigned id) const = 0;
     virtual OSMNodeID GetOSMNodeIDOfNode(const unsigned id) const = 0;
 
-    virtual unsigned GetGeometryIndexForEdgeID(const unsigned id) const = 0;
+    virtual GeometryID GetGeometryIndexForEdgeID(const unsigned id) const = 0;
 
-    virtual void GetUncompressedGeometry(const EdgeID id,
-                                         std::vector<NodeID> &result_nodes) const = 0;
+    virtual std::vector<NodeID> GetUncompressedForwardGeometry(const EdgeID id) const = 0;
+
+    virtual std::vector<NodeID> GetUncompressedReverseGeometry(const EdgeID id) const = 0;
 
     // Gets the weight values for each segment in an uncompressed geometry.
     // Should always be 1 shorter than GetUncompressedGeometry
-    virtual void GetUncompressedWeights(const EdgeID id,
-                                        std::vector<EdgeWeight> &result_weights) const = 0;
+    virtual std::vector<EdgeWeight> GetUncompressedForwardWeights(const EdgeID id) const = 0;
+
+    virtual std::vector<EdgeWeight> GetUncompressedReverseWeights(const EdgeID id) const = 0;
 
     // Returns the data source ids that were used to supply the edge
     // weights.  Will return an empty array when only the base profile is used.
-    virtual void GetUncompressedDatasources(const EdgeID id,
-                                            std::vector<uint8_t> &data_sources) const = 0;
+    virtual std::vector<uint8_t> GetUncompressedForwardDatasources(const EdgeID id) const = 0;
+    virtual std::vector<uint8_t> GetUncompressedReverseDatasources(const EdgeID id) const = 0;
 
     // Gets the name of a datasource
     virtual std::string GetDatasourceName(const uint8_t datasource_name_id) const = 0;
@@ -140,7 +149,7 @@ class BaseDataFacade
                                                       const int bearing_range) const = 0;
 
     virtual bool hasLaneData(const EdgeID id) const = 0;
-    virtual util::guidance::LaneTupelIdPair GetLaneData(const EdgeID id) const = 0;
+    virtual util::guidance::LaneTupleIdPair GetLaneData(const EdgeID id) const = 0;
     virtual extractor::guidance::TurnLaneDescription
     GetTurnDescription(const LaneDescriptionID lane_description_id) const = 0;
 
@@ -151,6 +160,8 @@ class BaseDataFacade
     virtual unsigned GetNameIndexFromEdgeID(const unsigned id) const = 0;
 
     virtual std::string GetNameForID(const unsigned name_id) const = 0;
+
+    virtual std::string GetRefForID(const unsigned name_id) const = 0;
 
     virtual std::string GetPronunciationForID(const unsigned name_id) const = 0;
 
@@ -163,6 +174,9 @@ class BaseDataFacade
     virtual bool GetContinueStraightDefault() const = 0;
 
     virtual BearingClassID GetBearingClassID(const NodeID id) const = 0;
+
+    virtual util::guidance::TurnBearing PreTurnBearing(const EdgeID eid) const = 0;
+    virtual util::guidance::TurnBearing PostTurnBearing(const EdgeID eid) const = 0;
 
     virtual util::guidance::BearingClass
     GetBearingClass(const BearingClassID bearing_class_id) const = 0;

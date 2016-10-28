@@ -1,8 +1,10 @@
-#include "extractor/edge_based_edge.hpp"
 #include "extractor/edge_based_graph_factory.hpp"
+#include "extractor/edge_based_edge.hpp"
+#include "util/bearing.hpp"
 #include "util/coordinate.hpp"
 #include "util/coordinate_calculation.hpp"
 #include "util/exception.hpp"
+#include "util/guidance/turn_bearing.hpp"
 #include "util/integer_range.hpp"
 #include "util/percent.hpp"
 #include "util/simple_logger.hpp"
@@ -34,21 +36,23 @@ namespace extractor
 
 EdgeBasedGraphFactory::EdgeBasedGraphFactory(
     std::shared_ptr<util::NodeBasedDynamicGraph> node_based_graph,
-    const CompressedEdgeContainer &compressed_edge_container,
+    CompressedEdgeContainer &compressed_edge_container,
     const std::unordered_set<NodeID> &barrier_nodes,
     const std::unordered_set<NodeID> &traffic_lights,
     std::shared_ptr<const RestrictionMap> restriction_map,
     const std::vector<QueryNode> &node_info_list,
     ProfileProperties profile_properties,
     const util::NameTable &name_table,
-    const std::vector<std::uint32_t> &turn_lane_offsets,
-    const std::vector<guidance::TurnLaneType::Mask> &turn_lane_masks)
+    std::vector<std::uint32_t> &turn_lane_offsets,
+    std::vector<guidance::TurnLaneType::Mask> &turn_lane_masks,
+    guidance::LaneDescriptionMap &lane_description_map)
     : m_max_edge_id(0), m_node_info_list(node_info_list),
       m_node_based_graph(std::move(node_based_graph)),
       m_restriction_map(std::move(restriction_map)), m_barrier_nodes(barrier_nodes),
       m_traffic_lights(traffic_lights), m_compressed_edge_container(compressed_edge_container),
       profile_properties(std::move(profile_properties)), name_table(name_table),
-      turn_lane_offsets(turn_lane_offsets), turn_lane_masks(turn_lane_masks)
+      turn_lane_offsets(turn_lane_offsets), turn_lane_masks(turn_lane_masks),
+      lane_description_map(lane_description_map)
 {
 }
 
@@ -122,10 +126,12 @@ void EdgeBasedGraphFactory::InsertEdgeBasedNode(const NodeID node_u, const NodeI
     const auto &forward_geometry = m_compressed_edge_container.GetBucketReference(edge_id_1);
     BOOST_ASSERT(forward_geometry.size() ==
                  m_compressed_edge_container.GetBucketReference(edge_id_2).size());
-    const auto geometry_size = forward_geometry.size();
+    const auto segment_count = forward_geometry.size();
 
     // There should always be some geometry
-    BOOST_ASSERT(0 != geometry_size);
+    BOOST_ASSERT(0 != segment_count);
+
+    const unsigned packed_geometry_id = m_compressed_edge_container.ZipEdges(edge_id_1, edge_id_2);
 
     NodeID current_edge_source_coordinate_id = node_u;
 
@@ -138,12 +144,12 @@ void EdgeBasedGraphFactory::InsertEdgeBasedNode(const NodeID node_u, const NodeI
         return SegmentID{edge_based_node_id, true};
     };
 
-    // traverse arrays from start and end respectively
-    for (const auto i : util::irange(std::size_t{0}, geometry_size))
+    // traverse arrays
+    for (const auto i : util::irange(std::size_t{0}, segment_count))
     {
         BOOST_ASSERT(
             current_edge_source_coordinate_id ==
-            m_compressed_edge_container.GetBucketReference(edge_id_2)[geometry_size - 1 - i]
+            m_compressed_edge_container.GetBucketReference(edge_id_2)[segment_count - 1 - i]
                 .node_id);
         const NodeID current_edge_target_coordinate_id = forward_geometry[i].node_id;
         BOOST_ASSERT(current_edge_target_coordinate_id != current_edge_source_coordinate_id);
@@ -154,8 +160,7 @@ void EdgeBasedGraphFactory::InsertEdgeBasedNode(const NodeID node_u, const NodeI
                                             current_edge_source_coordinate_id,
                                             current_edge_target_coordinate_id,
                                             forward_data.name_id,
-                                            m_compressed_edge_container.GetPositionForID(edge_id_1),
-                                            m_compressed_edge_container.GetPositionForID(edge_id_2),
+                                            packed_geometry_id,
                                             false,
                                             INVALID_COMPONENTID,
                                             i,
@@ -255,6 +260,8 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedNodes()
 {
     util::Percent progress(m_node_based_graph->GetNumberOfNodes());
 
+    m_compressed_edge_container.InitializeBothwayVector();
+
     // loop over all edges and generate new set of nodes
     for (const auto node_u : util::irange(0u, m_node_based_graph->GetNumberOfNodes()))
     {
@@ -324,7 +331,7 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
     }
 
     // Writes a dummy value at the front that is updated later with the total length
-    const unsigned length_prefix_empty_space{0};
+    const std::uint64_t length_prefix_empty_space{0};
     edge_data_file.write(reinterpret_cast<const char *>(&length_prefix_empty_space),
                          sizeof(length_prefix_empty_space));
 
@@ -342,14 +349,20 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
                                          m_barrier_nodes,
                                          m_compressed_edge_container,
                                          name_table,
-                                         street_name_suffix_table);
-    guidance::lanes::TurnLaneHandler turn_lane_handler(
-        *m_node_based_graph, turn_lane_offsets, turn_lane_masks, m_node_info_list, turn_analysis);
+                                         street_name_suffix_table,
+                                         profile_properties);
+
+    guidance::LaneDataIdMap lane_data_map;
+    guidance::lanes::TurnLaneHandler turn_lane_handler(*m_node_based_graph,
+                                                       turn_lane_offsets,
+                                                       turn_lane_masks,
+                                                       lane_description_map,
+                                                       turn_analysis,
+                                                       lane_data_map);
 
     bearing_class_by_node_based_node.resize(m_node_based_graph->GetNumberOfNodes(),
                                             std::numeric_limits<std::uint32_t>::max());
 
-    guidance::LaneDataIdMap lane_data_map;
     for (const auto node_u : util::irange(0u, m_node_based_graph->GetNumberOfNodes()))
     {
         progress.PrintStatus(node_u);
@@ -365,18 +378,14 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
             auto intersection = turn_analysis.getIntersection(node_u, edge_from_u);
             intersection =
                 turn_analysis.assignTurnTypes(node_u, edge_from_u, std::move(intersection));
+            intersection =
+                turn_lane_handler.assignTurnLanes(node_u, edge_from_u, std::move(intersection));
 
-            intersection = turn_lane_handler.assignTurnLanes(
-                node_u, edge_from_u, std::move(intersection), lane_data_map);
             const auto possible_turns = turn_analysis.transformIntersectionIntoTurns(intersection);
 
             // the entry class depends on the turn, so we have to classify the interesction for
             // every edge
-            const auto turn_classification = classifyIntersection(node_v,
-                                                                  intersection,
-                                                                  *m_node_based_graph,
-                                                                  m_compressed_edge_container,
-                                                                  m_node_info_list);
+            const auto turn_classification = classifyIntersection(intersection);
 
             const auto entry_class_id = [&](const util::guidance::EntryClass entry_class) {
                 if (0 == entry_class_hash.count(entry_class))
@@ -422,24 +431,54 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
                     distance += profile_properties.traffic_signal_penalty;
                 }
 
-                const int32_t turn_penalty = scripting_environment.GetTurnPenalty(180. - turn.angle);
+                const int32_t turn_penalty =
+                    scripting_environment.GetTurnPenalty(180. - turn.angle);
+
                 const auto turn_instruction = turn.instruction;
 
-                if (guidance::isUturn(turn_instruction))
+                if (turn_instruction.direction_modifier == guidance::DirectionModifier::UTurn)
                 {
                     distance += profile_properties.u_turn_penalty;
                 }
 
-                distance += turn_penalty;
+                // don't add turn penalty if it is not an actual turn. This heuristic is necessary
+                // since OSRM cannot handle looping roads/parallel roads
+                if (turn_instruction.type != guidance::TurnType::NoTurn)
+                    distance += turn_penalty;
 
-                BOOST_ASSERT(m_compressed_edge_container.HasEntryForID(edge_from_u));
-                original_edge_data_vector.emplace_back(
-                    m_compressed_edge_container.GetPositionForID(edge_from_u),
-                    edge_data1.name_id,
-                    turn.lane_data_id,
-                    turn_instruction,
-                    entry_class_id,
-                    edge_data1.travel_mode);
+                const bool is_encoded_forwards =
+                    m_compressed_edge_container.HasZippedEntryForForwardID(edge_from_u);
+                const bool is_encoded_backwards =
+                    m_compressed_edge_container.HasZippedEntryForReverseID(edge_from_u);
+                BOOST_ASSERT(is_encoded_forwards || is_encoded_backwards);
+                if (is_encoded_forwards)
+                {
+                    original_edge_data_vector.emplace_back(
+                        GeometryID{
+                            m_compressed_edge_container.GetZippedPositionForForwardID(edge_from_u),
+                            true},
+                        edge_data1.name_id,
+                        turn.lane_data_id,
+                        turn_instruction,
+                        entry_class_id,
+                        edge_data1.travel_mode,
+                        util::guidance::TurnBearing(intersection[0].turn.bearing),
+                        util::guidance::TurnBearing(turn.bearing));
+                }
+                else if (is_encoded_backwards)
+                {
+                    original_edge_data_vector.emplace_back(
+                        GeometryID{
+                            m_compressed_edge_container.GetZippedPositionForReverseID(edge_from_u),
+                            false},
+                        edge_data1.name_id,
+                        turn.lane_data_id,
+                        turn_instruction,
+                        entry_class_id,
+                        edge_data1.travel_mode,
+                        util::guidance::TurnBearing(intersection[0].turn.bearing),
+                        util::guidance::TurnBearing(turn.bearing));
+                }
 
                 ++original_edges_counter;
 
@@ -539,7 +578,7 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
 
     util::SimpleLogger().Write() << "Writing Turn Lane Data to File...";
     std::ofstream turn_lane_data_file(turn_lane_data_filename.c_str(), std::ios::binary);
-    std::vector<util::guidance::LaneTupelIdPair> lane_data(lane_data_map.size());
+    std::vector<util::guidance::LaneTupleIdPair> lane_data(lane_data_map.size());
     // extract lane data sorted by ID
     for (auto itr : lane_data_map)
         lane_data[itr.second] = itr.first;
@@ -549,7 +588,7 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
 
     if (!lane_data.empty())
         turn_lane_data_file.write(reinterpret_cast<const char *>(&lane_data[0]),
-                                  sizeof(util::guidance::LaneTupelIdPair) * lane_data.size());
+                                  sizeof(util::guidance::LaneTupleIdPair) * lane_data.size());
 
     util::SimpleLogger().Write() << "done.";
 
@@ -558,7 +597,7 @@ void EdgeBasedGraphFactory::GenerateEdgeExpandedEdges(
     // Finally jump back to the empty space at the beginning and write length prefix
     edge_data_file.seekp(std::ios::beg);
 
-    const auto length_prefix = boost::numeric_cast<unsigned>(original_edges_counter);
+    const auto length_prefix = boost::numeric_cast<std::uint64_t>(original_edges_counter);
     static_assert(sizeof(length_prefix_empty_space) == sizeof(length_prefix), "type mismatch");
 
     edge_data_file.write(reinterpret_cast<const char *>(&length_prefix), sizeof(length_prefix));

@@ -6,7 +6,9 @@ Feature: Foot - Way ref
 
     Scenario: Foot - Way with both name and ref
         Given the node map
-            | a | b |
+            """
+            a b
+            """
 
         And the ways
             | nodes | name         | ref |
@@ -14,23 +16,27 @@ Feature: Foot - Way ref
 
         When I route I should get
             | from | to | route                               |
-            | a    | b  | Utopia Drive (E7),Utopia Drive (E7) |
+            | a    | b  | Utopia Drive,Utopia Drive           |
 
     Scenario: Foot - Way with only ref
         Given the node map
-            | a | b |
+            """
+            a b
+            """
 
         And the ways
             | nodes | name | ref |
             | ab    |      | E7  |
 
         When I route I should get
-            | from | to | route |
-            | a    | b  | E7,E7 |
+            | from | to | route                               |
+            | a    | b  | {highway:primary},{highway:primary} |
 
     Scenario: Foot - Way with only name
         Given the node map
-            | a | b |
+            """
+            a b
+            """
 
         And the ways
             | nodes | name         |

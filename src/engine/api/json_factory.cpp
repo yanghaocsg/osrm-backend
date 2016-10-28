@@ -50,7 +50,7 @@ const constexpr char *turn_type_names[] = {
     "roundabout",      "roundabout", "rotary",   "rotary",      "roundabout turn",
     "roundabout turn", "use lane",   "invalid",  "invalid",     "invalid",
     "invalid",         "invalid",    "invalid",  "invalid",     "invalid",
-    "invalid"};
+    "invalid",         "invalid"};
 
 const constexpr char *waypoint_type_names[] = {"invalid", "arrive", "depart"};
 
@@ -68,6 +68,8 @@ inline bool hasValidLanes(const guidance::Intersection &intersection)
 
 std::string instructionTypeToString(const TurnType::Enum type)
 {
+    static_assert(sizeof(turn_type_names) / sizeof(turn_type_names[0]) >= TurnType::MaxTurnType,
+                  "Some turn types has not string representation.");
     return turn_type_names[static_cast<std::size_t>(type)];
 }
 
@@ -83,7 +85,8 @@ util::json::Array lanesFromIntersection(const guidance::Intersection &intersecti
         util::json::Object lane;
         lane.values["indications"] = extractor::guidance::TurnLaneType::toJsonArray(lane_desc);
         if (lane_id >= intersection.lanes.first_lane_from_the_right &&
-            lane_id < intersection.lanes.first_lane_from_the_right + intersection.lanes.lanes_in_turn)
+            lane_id <
+                intersection.lanes.first_lane_from_the_right + intersection.lanes.lanes_in_turn)
             lane.values["valid"] = util::json::True();
         else
             lane.values["valid"] = util::json::False();
@@ -96,11 +99,17 @@ util::json::Array lanesFromIntersection(const guidance::Intersection &intersecti
 
 std::string instructionModifierToString(const DirectionModifier::Enum modifier)
 {
+    static_assert(sizeof(modifier_names) / sizeof(modifier_names[0]) >=
+                      DirectionModifier::MaxDirectionModifier,
+                  "Some direction modifiers has not string representation.");
     return modifier_names[static_cast<std::size_t>(modifier)];
 }
 
 std::string waypointTypeToString(const guidance::WaypointType waypoint_type)
 {
+    static_assert(sizeof(waypoint_type_names) / sizeof(waypoint_type_names[0]) >=
+                      static_cast<size_t>(guidance::WaypointType::MaxWaypointType),
+                  "Some waypoint types has not string representation.");
     return waypoint_type_names[static_cast<std::size_t>(waypoint_type)];
 }
 
@@ -166,10 +175,18 @@ std::string modeToString(const extractor::TravelMode mode)
 util::json::Object makeStepManeuver(const guidance::StepManeuver &maneuver)
 {
     util::json::Object step_maneuver;
+
+    std::string maneuver_type;
+
     if (maneuver.waypoint_type == guidance::WaypointType::None)
-        step_maneuver.values["type"] = detail::instructionTypeToString(maneuver.instruction.type);
+        maneuver_type = detail::instructionTypeToString(maneuver.instruction.type);
     else
-        step_maneuver.values["type"] = detail::waypointTypeToString(maneuver.waypoint_type);
+        maneuver_type = detail::waypointTypeToString(maneuver.waypoint_type);
+
+    // These invalid responses should never happen: log if they do happen
+    BOOST_ASSERT_MSG(maneuver_type != "invalid", "unexpected invalid maneuver type");
+
+    step_maneuver.values["type"] = std::move(maneuver_type);
 
     if (detail::isValidModifier(maneuver))
         step_maneuver.values["modifier"] =
@@ -226,12 +243,20 @@ util::json::Object makeRouteStep(guidance::RouteStep step, util::json::Value geo
     route_step.values["distance"] = std::round(step.distance * 10) / 10.;
     route_step.values["duration"] = std::round(step.duration * 10) / 10.;
     route_step.values["name"] = std::move(step.name);
+    if (!step.ref.empty())
+        route_step.values["ref"] = std::move(step.ref);
     if (!step.pronunciation.empty())
         route_step.values["pronunciation"] = std::move(step.pronunciation);
     if (!step.destinations.empty())
         route_step.values["destinations"] = std::move(step.destinations);
     if (!step.rotary_name.empty())
+    {
         route_step.values["rotary_name"] = std::move(step.rotary_name);
+        if (!step.rotary_pronunciation.empty())
+        {
+            route_step.values["rotary_pronunciation"] = std::move(step.rotary_pronunciation);
+        }
+    }
 
     route_step.values["mode"] = detail::modeToString(std::move(step.mode));
     route_step.values["maneuver"] = makeStepManeuver(std::move(step.maneuver));

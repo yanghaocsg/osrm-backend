@@ -59,7 +59,6 @@ void GraphCompressor::Compress(const std::unordered_set<NodeID> &barrier_nodes,
         //    forward_e1
         //
         // If the edges are compatible.
-
         const bool reverse_edge_order = graph.GetEdgeData(graph.BeginEdges(node_v)).reversed;
         const EdgeID forward_e2 = graph.BeginEdges(node_v) + reverse_edge_order;
         BOOST_ASSERT(SPECIAL_EDGEID != forward_e2);
@@ -100,8 +99,8 @@ void GraphCompressor::Compress(const std::unordered_set<NodeID> &barrier_nodes,
             continue;
         }
 
-        if (fwd_edge_data1.IsCompatibleTo(fwd_edge_data2) &&
-            rev_edge_data1.IsCompatibleTo(rev_edge_data2))
+        if (fwd_edge_data1.CanCombineWith(fwd_edge_data2) &&
+            rev_edge_data1.CanCombineWith(rev_edge_data2))
         {
             BOOST_ASSERT(graph.GetEdgeData(forward_e1).name_id ==
                          graph.GetEdgeData(reverse_e1).name_id);
@@ -109,7 +108,7 @@ void GraphCompressor::Compress(const std::unordered_set<NodeID> &barrier_nodes,
                          graph.GetEdgeData(reverse_e2).name_id);
 
             // Do not compress edge if it crosses a traffic signal.
-            // This can't be done in IsCompatibleTo, becase we only store the
+            // This can't be done in CanCombineWith, becase we only store the
             // traffic signals in the `traffic_lights` list, which EdgeData
             // doesn't have access to.
             const bool has_node_penalty = traffic_lights.find(node_v) != traffic_lights.end();
@@ -160,7 +159,8 @@ void GraphCompressor::Compress(const std::unordered_set<NodeID> &barrier_nodes,
              * turn-lanes. Without this,we would have to treat any turn-lane beginning/ending just
              * like a barrier.
              */
-            const auto selectLaneID = [](const LaneDescriptionID front, const LaneDescriptionID back) {
+            const auto selectLaneID = [](const LaneDescriptionID front,
+                                         const LaneDescriptionID back) {
                 // A lane has tags: u - (front) - v - (back) - w
                 // During contraction, we keep only one of the tags. Usually the one closer to the
                 // intersection is preferred. If its empty, however, we keep the non-empty one
@@ -168,10 +168,12 @@ void GraphCompressor::Compress(const std::unordered_set<NodeID> &barrier_nodes,
                     return front;
                 return back;
             };
-            graph.GetEdgeData(forward_e1).lane_description_id = selectLaneID(
-                graph.GetEdgeData(forward_e1).lane_description_id, fwd_edge_data2.lane_description_id);
-            graph.GetEdgeData(reverse_e1).lane_description_id = selectLaneID(
-                graph.GetEdgeData(reverse_e1).lane_description_id, rev_edge_data2.lane_description_id);
+            graph.GetEdgeData(forward_e1).lane_description_id =
+                selectLaneID(graph.GetEdgeData(forward_e1).lane_description_id,
+                             fwd_edge_data2.lane_description_id);
+            graph.GetEdgeData(reverse_e1).lane_description_id =
+                selectLaneID(graph.GetEdgeData(reverse_e1).lane_description_id,
+                             rev_edge_data2.lane_description_id);
 
             // remove e2's (if bidir, otherwise only one)
             graph.DeleteEdge(node_v, forward_e2);

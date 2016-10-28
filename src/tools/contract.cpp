@@ -52,7 +52,12 @@ return_code parseArguments(int argc, char *argv[], contractor::ContractorConfig 
         "level-cache,o",
         boost::program_options::value<bool>(&contractor_config.use_cached_priority)
             ->default_value(false),
-        "Use .level file to retain the contaction level for each node from the last run.");
+        "Use .level file to retain the contaction level for each node from the last run.")(
+        "edge-weight-updates-over-factor",
+        boost::program_options::value<double>(&contractor_config.log_edge_updates_factor)
+            ->default_value(0.0),
+        "Use with `--segment-speed-file`. Provide an `x` factor, by which Extractor will log edge "
+        "weights updated by more than this factor");
 
     // hidden options, will be allowed on command line, but will not be shown to the user
     boost::program_options::options_description hidden_options("Hidden options");
@@ -77,11 +82,19 @@ return_code parseArguments(int argc, char *argv[], contractor::ContractorConfig 
 
     // parse command line options
     boost::program_options::variables_map option_variables;
-    boost::program_options::store(boost::program_options::command_line_parser(argc, argv)
-                                      .options(cmdline_options)
-                                      .positional(positional_options)
-                                      .run(),
-                                  option_variables);
+    try
+    {
+        boost::program_options::store(boost::program_options::command_line_parser(argc, argv)
+                                          .options(cmdline_options)
+                                          .positional(positional_options)
+                                          .run(),
+                                      option_variables);
+    }
+    catch (const boost::program_options::error &e)
+    {
+        util::SimpleLogger().Write(logWARNING) << "[error] " << e.what();
+        return return_code::fail;
+    }
 
     if (option_variables.count("version"))
     {
@@ -160,10 +173,5 @@ catch (const std::bad_alloc &e)
     util::SimpleLogger().Write(logWARNING) << "[exception] " << e.what();
     util::SimpleLogger().Write(logWARNING)
         << "Please provide more memory or consider using a larger swapfile";
-    return EXIT_FAILURE;
-}
-catch (const std::exception &e)
-{
-    util::SimpleLogger().Write(logWARNING) << "[exception] " << e.what();
     return EXIT_FAILURE;
 }

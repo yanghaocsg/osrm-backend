@@ -4,7 +4,6 @@
 #include "util/exception.hpp"
 #include "util/fingerprint.hpp"
 #include "util/graph_loader.hpp"
-#include "util/make_unique.hpp"
 #include "util/simple_logger.hpp"
 #include "util/static_graph.hpp"
 #include "util/typedefs.hpp"
@@ -102,7 +101,7 @@ std::size_t loadGraph(const char *path,
 }
 }
 
-int main(int argc, char *argv[]) try
+int main(int argc, char *argv[])
 {
     std::vector<osrm::extractor::QueryNode> coordinate_list;
     osrm::util::LogPolicy::GetInstance().Unmute();
@@ -124,8 +123,7 @@ int main(int argc, char *argv[]) try
 
     osrm::util::SimpleLogger().Write() << "Starting SCC graph traversal";
 
-    auto tarjan =
-        osrm::util::make_unique<osrm::extractor::TarjanSCC<osrm::tools::TarjanGraph>>(graph);
+    auto tarjan = std::make_unique<osrm::extractor::TarjanSCC<osrm::tools::TarjanGraph>>(graph);
     tarjan->Run();
     osrm::util::SimpleLogger().Write() << "identified: " << tarjan->GetNumberOfComponents()
                                        << " many components";
@@ -227,9 +225,4 @@ int main(int argc, char *argv[]) try
 
     osrm::util::SimpleLogger().Write() << "finished component analysis";
     return EXIT_SUCCESS;
-}
-catch (const std::exception &e)
-{
-    osrm::util::SimpleLogger().Write(logWARNING) << "[exception] " << e.what();
-    return EXIT_FAILURE;
 }

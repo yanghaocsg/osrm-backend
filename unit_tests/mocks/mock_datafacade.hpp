@@ -9,6 +9,7 @@
 #include "engine/datafacade/datafacade_base.hpp"
 #include "util/guidance/bearing_class.hpp"
 #include "util/guidance/entry_class.hpp"
+#include "util/guidance/turn_bearing.hpp"
 #include "util/typedefs.hpp"
 
 namespace osrm
@@ -41,6 +42,14 @@ class MockDataFacade final : public engine::datafacade::BaseDataFacade
     {
         return SPECIAL_EDGEID;
     }
+
+    EdgeID FindSmallestEdge(const NodeID /* from */,
+                            const NodeID /* to */,
+                            std::function<bool(EdgeData)> /* filter */) const override
+    {
+        return SPECIAL_EDGEID;
+    }
+
     EdgeID FindEdgeIndicateIfReverse(const NodeID /* from */,
                                      const NodeID /* to */,
                                      bool & /* result */) const override
@@ -53,21 +62,39 @@ class MockDataFacade final : public engine::datafacade::BaseDataFacade
     }
     OSMNodeID GetOSMNodeIDOfNode(const unsigned /* id */) const override { return OSMNodeID{0}; }
     bool EdgeIsCompressed(const unsigned /* id */) const { return false; }
-    unsigned GetGeometryIndexForEdgeID(const unsigned /* id */) const override
+    GeometryID GetGeometryIndexForEdgeID(const unsigned /* id */) const override
     {
-        return SPECIAL_NODEID;
+        return GeometryID{SPECIAL_GEOMETRYID, false};
     }
-    void GetUncompressedGeometry(const EdgeID /* id */,
-                                 std::vector<NodeID> & /* result_nodes */) const override
+    std::vector<NodeID> GetUncompressedForwardGeometry(const EdgeID /* id */) const override
     {
+        return {};
     }
-    void GetUncompressedWeights(const EdgeID /* id */,
-                                std::vector<EdgeWeight> & /* result_weights */) const override
+    std::vector<NodeID> GetUncompressedReverseGeometry(const EdgeID /* id */) const override
     {
+        return {};
     }
-    void GetUncompressedDatasources(const EdgeID /*id*/,
-                                    std::vector<uint8_t> & /*data_sources*/) const override
+    std::vector<EdgeWeight> GetUncompressedForwardWeights(const EdgeID /* id */) const override
     {
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(1);
+        result_weights[0] = 1;
+        return result_weights;
+    }
+    std::vector<EdgeWeight> GetUncompressedReverseWeights(const EdgeID /* id */) const override
+    {
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(1);
+        result_weights[0] = 1;
+        return result_weights;
+    }
+    std::vector<uint8_t> GetUncompressedForwardDatasources(const EdgeID /*id*/) const override
+    {
+        return {};
+    }
+    std::vector<uint8_t> GetUncompressedReverseDatasources(const EdgeID /*id*/) const override
+    {
+        return {};
     }
     std::string GetDatasourceName(const uint8_t /*datasource_name_id*/) const override
     {
@@ -167,22 +194,32 @@ class MockDataFacade final : public engine::datafacade::BaseDataFacade
                                                       const int /*bearing_range*/) const override
     {
         return {};
-    };
+    }
 
     unsigned GetCheckSum() const override { return 0; }
     bool IsCoreNode(const NodeID /* id */) const override { return false; }
     unsigned GetNameIndexFromEdgeID(const unsigned /* id */) const override { return 0; }
     std::string GetNameForID(const unsigned /* name_id */) const override { return ""; }
+    std::string GetRefForID(const unsigned /* name_id */) const override { return ""; }
     std::string GetPronunciationForID(const unsigned /* name_id */) const override { return ""; }
     std::string GetDestinationsForID(const unsigned /* name_id */) const override { return ""; }
     std::size_t GetCoreSize() const override { return 0; }
     std::string GetTimestamp() const override { return ""; }
     bool GetContinueStraightDefault() const override { return true; }
-    BearingClassID GetBearingClassID(const NodeID /*id*/) const override { return 0; };
+    BearingClassID GetBearingClassID(const NodeID /*id*/) const override { return 0; }
     EntryClassID GetEntryClassID(const EdgeID /*id*/) const override { return 0; }
 
+    util::guidance::TurnBearing PreTurnBearing(const EdgeID /*eid*/) const override final
+    {
+        return util::guidance::TurnBearing{0.0};
+    }
+    util::guidance::TurnBearing PostTurnBearing(const EdgeID /*eid*/) const override final
+    {
+        return util::guidance::TurnBearing{0.0};
+    }
+
     bool hasLaneData(const EdgeID /*id*/) const override final { return true; };
-    util::guidance::LaneTupelIdPair GetLaneData(const EdgeID /*id*/) const override final
+    util::guidance::LaneTupleIdPair GetLaneData(const EdgeID /*id*/) const override final
     {
         return {{0, 0}, 0};
     }

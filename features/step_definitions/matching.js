@@ -6,7 +6,8 @@ module.exports = function () {
     this.When(/^I match I should get$/, (table, callback) => {
         var got;
 
-        this.reprocessAndLoadData(() => {
+        this.reprocessAndLoadData((e) => {
+            if (e) return callback(e);
             var testRow = (row, ri, cb) => {
                 var afterRequest = (err, res) => {
                     if (err) return cb(err);
@@ -156,7 +157,6 @@ module.exports = function () {
                         } else {
                             got.matchings = encodedResult;
                             row.matchings = extendedTarget;
-                            this.logFail(row, got, { matching: { query: this.query, response: res } });
                         }
 
                         cb(null, got);

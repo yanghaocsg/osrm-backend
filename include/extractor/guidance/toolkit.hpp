@@ -1,21 +1,24 @@
 #ifndef OSRM_GUIDANCE_TOOLKIT_HPP_
 #define OSRM_GUIDANCE_TOOLKIT_HPP_
 
+#include "util/attributes.hpp"
 #include "util/bearing.hpp"
 #include "util/coordinate.hpp"
 #include "util/coordinate_calculation.hpp"
 #include "util/guidance/toolkit.hpp"
 #include "util/guidance/turn_lanes.hpp"
+#include "util/node_based_graph.hpp"
 #include "util/typedefs.hpp"
 
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/query_node.hpp"
-#include "extractor/suffix_table.hpp"
 
-#include "extractor/guidance/classification_data.hpp"
-#include "extractor/guidance/discrete_angle.hpp"
+#include "extractor/guidance/constants.hpp"
 #include "extractor/guidance/intersection.hpp"
+#include "extractor/guidance/road_classification.hpp"
 #include "extractor/guidance/turn_instruction.hpp"
+
+#include "engine/guidance/route_step.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -24,10 +27,12 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/functional/hash.hpp>
+#include <boost/range/iterator_range.hpp>
+#include <boost/tokenizer.hpp>
 
 namespace osrm
 {
@@ -36,415 +41,17 @@ namespace extractor
 namespace guidance
 {
 
-using util::guidance::LaneTupelIdPair;
-using LaneDataIdMap = std::unordered_map<LaneTupelIdPair, LaneDataID, boost::hash<LaneTupelIdPair>>;
+using util::guidance::LaneTupleIdPair;
+using LaneDataIdMap = std::unordered_map<LaneTupleIdPair, LaneDataID, boost::hash<LaneTupleIdPair>>;
 
 using util::guidance::angularDeviation;
 using util::guidance::entersRoundabout;
 using util::guidance::leavesRoundabout;
 
-namespace detail
-{
-const constexpr double DESIRED_SEGMENT_LENGTH = 10.0;
-const constexpr bool shiftable_ccw[] = {false, true, true, false, false, true, true, false};
-const constexpr bool shiftable_cw[] = {false, false, true, true, false, false, true, true};
-const constexpr std::uint8_t modifier_bounds[detail::num_direction_modifiers] = {
-    0, 36, 93, 121, 136, 163, 220, 255};
-
-const constexpr double discrete_angle_step_size = 360. / 24;
-
-template <typename IteratorType>
-util::Coordinate
-getCoordinateFromCompressedRange(util::Coordinate current_coordinate,
-                                 const IteratorType compressed_geometry_begin,
-                                 const IteratorType compressed_geometry_end,
-                                 const util::Coordinate final_coordinate,
-                                 const std::vector<extractor::QueryNode> &query_nodes)
-{
-    const auto extractCoordinateFromNode =
-        [](const extractor::QueryNode &node) -> util::Coordinate {
-        return {node.lon, node.lat};
-    };
-    double distance_to_current_coordinate = 0;
-    double distance_to_next_coordinate = 0;
-
-    // get the length that is missing from the current segment to reach DESIRED_SEGMENT_LENGTH
-    const auto getFactor = [](const double first_distance, const double second_distance) {
-        BOOST_ASSERT(first_distance < detail::DESIRED_SEGMENT_LENGTH);
-        double segment_length = second_distance - first_distance;
-        BOOST_ASSERT(segment_length > 0);
-        BOOST_ASSERT(second_distance >= detail::DESIRED_SEGMENT_LENGTH);
-        double missing_distance = detail::DESIRED_SEGMENT_LENGTH - first_distance;
-        return std::max(0., std::min(missing_distance / segment_length, 1.0));
-    };
-
-    for (auto compressed_geometry_itr = compressed_geometry_begin;
-         compressed_geometry_itr != compressed_geometry_end;
-         ++compressed_geometry_itr)
-    {
-        const auto next_coordinate =
-            extractCoordinateFromNode(query_nodes[compressed_geometry_itr->node_id]);
-        distance_to_next_coordinate =
-            distance_to_current_coordinate +
-            util::coordinate_calculation::haversineDistance(current_coordinate, next_coordinate);
-
-        // reached point where coordinates switch between
-        if (distance_to_next_coordinate >= detail::DESIRED_SEGMENT_LENGTH)
-            return util::coordinate_calculation::interpolateLinear(
-                getFactor(distance_to_current_coordinate, distance_to_next_coordinate),
-                current_coordinate,
-                next_coordinate);
-
-        // prepare for next iteration
-        current_coordinate = next_coordinate;
-        distance_to_current_coordinate = distance_to_next_coordinate;
-    }
-
-    distance_to_next_coordinate =
-        distance_to_current_coordinate +
-        util::coordinate_calculation::haversineDistance(current_coordinate, final_coordinate);
-
-    // reached point where coordinates switch between
-    if (distance_to_current_coordinate < detail::DESIRED_SEGMENT_LENGTH &&
-        distance_to_next_coordinate >= detail::DESIRED_SEGMENT_LENGTH)
-        return util::coordinate_calculation::interpolateLinear(
-            getFactor(distance_to_current_coordinate, distance_to_next_coordinate),
-            current_coordinate,
-            final_coordinate);
-    else
-        return final_coordinate;
-}
-} // namespace detail
-
-// Finds a (potentially interpolated) coordinate that is DESIRED_SEGMENT_LENGTH away
-// from the start of an edge
-inline util::Coordinate
-getRepresentativeCoordinate(const NodeID from_node,
-                            const NodeID to_node,
-                            const EdgeID via_edge_id,
-                            const bool traverse_in_reverse,
-                            const extractor::CompressedEdgeContainer &compressed_geometries,
-                            const std::vector<extractor::QueryNode> &query_nodes)
-{
-    const auto extractCoordinateFromNode =
-        [](const extractor::QueryNode &node) -> util::Coordinate {
-        return {node.lon, node.lat};
-    };
-
-    // Uncompressed roads are simple, return the coordinate at the end
-    if (!compressed_geometries.HasEntryForID(via_edge_id))
-    {
-        return extractCoordinateFromNode(traverse_in_reverse ? query_nodes[from_node]
-                                                             : query_nodes[to_node]);
-    }
-    else
-    {
-        const auto &geometry = compressed_geometries.GetBucketReference(via_edge_id);
-
-        const auto base_node_id = (traverse_in_reverse) ? to_node : from_node;
-        const auto base_coordinate = extractCoordinateFromNode(query_nodes[base_node_id]);
-
-        const auto final_node = (traverse_in_reverse) ? from_node : to_node;
-        const auto final_coordinate = extractCoordinateFromNode(query_nodes[final_node]);
-
-        if (traverse_in_reverse)
-            return detail::getCoordinateFromCompressedRange(
-                base_coordinate, geometry.rbegin(), geometry.rend(), final_coordinate, query_nodes);
-        else
-            return detail::getCoordinateFromCompressedRange(
-                base_coordinate, geometry.begin(), geometry.end(), final_coordinate, query_nodes);
-    }
-}
-
-// shift an instruction around the degree circle in CCW order
-inline DirectionModifier::Enum forcedShiftCCW(const DirectionModifier::Enum modifier)
-{
-    return static_cast<DirectionModifier::Enum>((static_cast<std::uint32_t>(modifier) + 1) %
-                                                detail::num_direction_modifiers);
-}
-
-inline DirectionModifier::Enum shiftCCW(const DirectionModifier::Enum modifier)
-{
-    if (detail::shiftable_ccw[static_cast<int>(modifier)])
-        return forcedShiftCCW(modifier);
-    else
-        return modifier;
-}
-
-// shift an instruction around the degree circle in CW order
-inline DirectionModifier::Enum forcedShiftCW(const DirectionModifier::Enum modifier)
-{
-    return static_cast<DirectionModifier::Enum>(
-        (static_cast<std::uint32_t>(modifier) + detail::num_direction_modifiers - 1) %
-        detail::num_direction_modifiers);
-}
-
-inline DirectionModifier::Enum shiftCW(const DirectionModifier::Enum modifier)
-{
-    if (detail::shiftable_cw[static_cast<int>(modifier)])
-        return forcedShiftCW(modifier);
-    else
-        return modifier;
-}
-
-inline bool isBasic(const TurnType::Enum type)
-{
-    return type == TurnType::Turn || type == TurnType::EndOfRoad;
-}
-
-inline bool isUturn(const TurnInstruction instruction)
-{
-    return isBasic(instruction.type) && instruction.direction_modifier == DirectionModifier::UTurn;
-}
-
-inline bool resolve(TurnInstruction &to_resolve, const TurnInstruction neighbor, bool resolve_cw)
-{
-    const auto shifted_turn = resolve_cw ? shiftCW(to_resolve.direction_modifier)
-                                         : shiftCCW(to_resolve.direction_modifier);
-    if (shifted_turn == neighbor.direction_modifier ||
-        shifted_turn == to_resolve.direction_modifier)
-        return false;
-
-    to_resolve.direction_modifier = shifted_turn;
-    return true;
-}
-
-inline bool resolveTransitive(TurnInstruction &first,
-                              TurnInstruction &second,
-                              const TurnInstruction third,
-                              bool resolve_cw)
-{
-    if (resolve(second, third, resolve_cw))
-    {
-        first.direction_modifier =
-            resolve_cw ? shiftCW(first.direction_modifier) : shiftCCW(first.direction_modifier);
-        return true;
-    }
-    return false;
-}
-
-inline bool isSlightTurn(const TurnInstruction turn)
-{
-    return (isBasic(turn.type) || turn.type == TurnType::NoTurn) &&
-           (turn.direction_modifier == DirectionModifier::Straight ||
-            turn.direction_modifier == DirectionModifier::SlightRight ||
-            turn.direction_modifier == DirectionModifier::SlightLeft);
-}
-
-inline bool isSlightModifier(const DirectionModifier::Enum direction_modifier)
-{
-    return (direction_modifier == DirectionModifier::Straight ||
-            direction_modifier == DirectionModifier::SlightRight ||
-            direction_modifier == DirectionModifier::SlightLeft);
-}
-
-inline bool isSharpTurn(const TurnInstruction turn)
-{
-    return isBasic(turn.type) && (turn.direction_modifier == DirectionModifier::SharpLeft ||
-                                  turn.direction_modifier == DirectionModifier::SharpRight);
-}
-
-inline bool isStraight(const TurnInstruction turn)
-{
-    return (isBasic(turn.type) || turn.type == TurnType::NoTurn) &&
-           turn.direction_modifier == DirectionModifier::Straight;
-}
-
-inline bool isConflict(const TurnInstruction first, const TurnInstruction second)
-{
-    return (first.type == second.type && first.direction_modifier == second.direction_modifier) ||
-           (isStraight(first) && isStraight(second));
-}
-
-inline DiscreteAngle discretizeAngle(const double angle)
-{
-    BOOST_ASSERT(angle >= 0. && angle <= 360.);
-    return DiscreteAngle(static_cast<std::uint8_t>(
-        (angle + 0.5 * detail::discrete_angle_step_size) / detail::discrete_angle_step_size));
-}
-
-inline double angleFromDiscreteAngle(const DiscreteAngle angle)
-{
-    return static_cast<double>(angle) * detail::discrete_angle_step_size +
-           0.5 * detail::discrete_angle_step_size;
-}
-
-inline double getAngularPenalty(const double angle, DirectionModifier::Enum modifier)
-{
-    // these are not aligned with getTurnDirection but represent an ideal center
-    const double center[] = {0, 45, 90, 135, 180, 225, 270, 315};
-    return angularDeviation(center[static_cast<int>(modifier)], angle);
-}
-
-inline double getTurnConfidence(const double angle, TurnInstruction instruction)
-{
-
-    // special handling of U-Turns and Roundabout
-    if (!isBasic(instruction.type) || instruction.direction_modifier == DirectionModifier::UTurn)
-        return 1.0;
-
-    const double deviations[] = {0, 45, 50, 30, 20, 30, 50, 45};
-    const double difference = getAngularPenalty(angle, instruction.direction_modifier);
-    const double max_deviation = deviations[static_cast<int>(instruction.direction_modifier)];
-    return 1.0 - (difference / max_deviation) * (difference / max_deviation);
-}
-
-inline bool canBeSuppressed(const TurnType::Enum type)
-{
-    if (type == TurnType::Turn)
-        return true;
-    return false;
-}
-
-inline bool isLowPriorityRoadClass(const FunctionalRoadClass road_class)
-{
-    return road_class == FunctionalRoadClass::LOW_PRIORITY_ROAD ||
-           road_class == FunctionalRoadClass::SERVICE;
-}
-
-inline bool isDistinct(const DirectionModifier::Enum first, const DirectionModifier::Enum second)
-{
-    if ((first + 1) % detail::num_direction_modifiers == second)
-        return false;
-
-    if ((second + 1) % detail::num_direction_modifiers == first)
-        return false;
-
-    return true;
-}
-
-inline std::pair<std::string, std::string> getPrefixAndSuffix(const std::string &data)
-{
-    const auto suffix_pos = data.find_last_of(' ');
-    if (suffix_pos == std::string::npos)
-        return {};
-
-    const auto prefix_pos = data.find_first_of(' ');
-    auto result = std::make_pair(data.substr(0, prefix_pos), data.substr(suffix_pos + 1));
-    boost::to_lower(result.first);
-    boost::to_lower(result.second);
-    return result;
-}
-
-inline bool requiresNameAnnounced(const std::string &from,
-                                  const std::string &to,
-                                  const SuffixTable &suffix_table)
-{
-    // first is empty and the second is not
-    if (from.empty() && !to.empty())
-        return true;
-
-    // FIXME, handle in profile to begin with?
-    // this uses the encoding of references in the profile, which is very BAD
-    // Input for this function should be a struct separating streetname, suffix (e.g. road,
-    // boulevard, North, West ...), and a list of references
-    std::string from_name;
-    std::string from_ref;
-    std::string to_name;
-    std::string to_ref;
-
-    // Split from the format "{name} ({ref})" -> name, ref
-    auto split = [](const std::string &name, std::string &out_name, std::string &out_ref) {
-        const auto ref_begin = name.find_first_of('(');
-        if (ref_begin != std::string::npos)
-        {
-            if (ref_begin != 0)
-                out_name = name.substr(0, ref_begin - 1);
-            const auto ref_end = name.find_first_of(')');
-            out_ref = name.substr(ref_begin + 1, ref_end - ref_begin - 1);
-        }
-        else
-        {
-            out_name = name;
-        }
-    };
-
-    split(from, from_name, from_ref);
-    split(to, to_name, to_ref);
-
-    // check similarity of names
-    const auto names_are_empty = from_name.empty() && to_name.empty();
-    const auto name_is_contained =
-        boost::starts_with(from_name, to_name) || boost::starts_with(to_name, from_name);
-
-    const auto checkForPrefixOrSuffixChange =
-        [](const std::string &first, const std::string &second, const SuffixTable &suffix_table) {
-
-            const auto first_prefix_and_suffixes = getPrefixAndSuffix(first);
-            const auto second_prefix_and_suffixes = getPrefixAndSuffix(second);
-            // reverse strings, get suffices and reverse them to get prefixes
-            const auto checkTable = [&](const std::string str) {
-                return str.empty() || suffix_table.isSuffix(str);
-            };
-
-            const bool is_prefix_change = [&]() -> bool {
-                if (!checkTable(first_prefix_and_suffixes.first))
-                    return false;
-                if (!checkTable(first_prefix_and_suffixes.first))
-                    return false;
-                return !first.compare(first_prefix_and_suffixes.first.length(),
-                                      std::string::npos,
-                                      second,
-                                      second_prefix_and_suffixes.first.length(),
-                                      std::string::npos);
-            }();
-
-            const bool is_suffix_change = [&]() -> bool {
-                if (!checkTable(first_prefix_and_suffixes.second))
-                    return false;
-                if (!checkTable(first_prefix_and_suffixes.second))
-                    return false;
-                return !first.compare(0,
-                                      first.length() - first_prefix_and_suffixes.second.length(),
-                                      second,
-                                      0,
-                                      second.length() - second_prefix_and_suffixes.second.length());
-            }();
-
-            return is_prefix_change || is_suffix_change;
-        };
-
-    const auto is_suffix_change = checkForPrefixOrSuffixChange(from_name, to_name, suffix_table);
-    const auto names_are_equal = from_name == to_name || name_is_contained || is_suffix_change;
-    const auto name_is_removed = !from_name.empty() && to_name.empty();
-    // references are contained in one another
-    const auto refs_are_empty = from_ref.empty() && to_ref.empty();
-    const auto ref_is_contained =
-        from_ref.empty() || to_ref.empty() ||
-        (from_ref.find(to_ref) != std::string::npos || to_ref.find(from_ref) != std::string::npos);
-    const auto ref_is_removed = !from_ref.empty() && to_ref.empty();
-
-    const auto obvious_change =
-        (names_are_empty && refs_are_empty) || (names_are_equal && ref_is_contained) ||
-        (names_are_equal && refs_are_empty) || (ref_is_contained && name_is_removed) ||
-        (names_are_equal && ref_is_removed) || is_suffix_change;
-
-    return !obvious_change;
-}
-
-inline int getPriority(const FunctionalRoadClass road_class)
-{
-    // The road priorities indicate which roads can bee seen as more or less equal.
-    // They are used in Fork-Discovery. Possibly should be moved to profiles post v5?
-    // A fork can happen between road types that are at most 1 priority apart from each other
-    const constexpr int road_priority[] = {
-        14, 0, 14, 2, 14, 4, 14, 6, 14, 8, 10, 11, 10, 12, 10, 14};
-    return road_priority[static_cast<int>(road_class)];
-}
-
-inline bool canBeSeenAsFork(const FunctionalRoadClass first, const FunctionalRoadClass second)
-{
-    // forks require similar road categories
-    // Based on the priorities assigned above, we can set forks only if the road priorities match
-    // closely.
-    // Potentially we could include features like number of lanes here and others?
-    // Should also be moved to profiles
-    return std::abs(getPriority(first) - getPriority(second)) <= 1;
-}
-
 // To simplify handling of Left/Right hand turns, we can mirror turns and write an intersection
 // handler only for one side. The mirror function turns a left-hand turn in a equivalent right-hand
 // turn and vice versa.
+OSRM_ATTR_WARN_UNUSED
 inline ConnectedRoad mirror(ConnectedRoad road)
 {
     const constexpr DirectionModifier::Enum mirrored_modifiers[] = {DirectionModifier::UTurn,
@@ -481,8 +88,11 @@ inline bool hasRoundaboutType(const TurnInstruction instruction)
                                                     TurnType::EnterRoundaboutIntersectionAtExit,
                                                     TurnType::ExitRoundaboutIntersection,
                                                     TurnType::StayOnRoundabout};
-    const auto valid_end = valid_types + 13;
-    return std::find(valid_types, valid_end, instruction.type) != valid_end;
+
+    const auto *first = valid_types;
+    const auto *last = first + sizeof(valid_types) / sizeof(valid_types[0]);
+
+    return std::find(first, last, instruction.type) != last;
 }
 
 // Public service vehicle lanes and similar can introduce additional lanes into the lane string that
@@ -494,6 +104,7 @@ inline bool hasRoundaboutType(const TurnInstruction instruction)
 // will be corrected to left|throught, since the final lane is not drivable.
 // This is in contrast to a situation with lanes:psv:forward=0 (or not set) where left|through|
 // represents left|through|through
+OSRM_ATTR_WARN_UNUSED
 inline std::string
 trimLaneString(std::string lane_string, std::int32_t count_left, std::int32_t count_right)
 {
@@ -503,7 +114,7 @@ trimLaneString(std::string lane_string, std::int32_t count_left, std::int32_t co
         for (std::int32_t i = 0; i < count_left; ++i)
             // this is adjusted for our fake pipe. The moment cucumber can handle multiple escaped
             // pipes, the '&' part can be removed
-            if (lane_string[i] != '|' && lane_string[i] != '&')
+            if (lane_string[i] != '|')
             {
                 sane = false;
                 break;
@@ -521,7 +132,7 @@ trimLaneString(std::string lane_string, std::int32_t count_left, std::int32_t co
              itr != lane_string.rend() && itr != lane_string.rbegin() + count_right;
              ++itr)
         {
-            if (*itr != '|' && *itr != '&')
+            if (*itr != '|')
             {
                 sane = false;
                 break;
@@ -531,6 +142,144 @@ trimLaneString(std::string lane_string, std::int32_t count_left, std::int32_t co
             lane_string.resize(lane_string.size() - count_right);
     }
     return lane_string;
+}
+
+// https://github.com/Project-OSRM/osrm-backend/issues/2638
+// It can happen that some lanes are not drivable by car. Here we handle this tagging scheme
+// (vehicle:lanes) to filter out not-allowed roads
+// lanes=3
+// turn:lanes=left|through|through|right
+// vehicle:lanes=yes|yes|no|yes
+// bicycle:lanes=yes|no|designated|yes
+OSRM_ATTR_WARN_UNUSED
+inline std::string applyAccessTokens(std::string lane_string, const std::string &access_tokens)
+{
+    typedef boost::tokenizer<boost::char_separator<char>> tokenizer;
+    boost::char_separator<char> sep("|", "", boost::keep_empty_tokens);
+    tokenizer tokens(lane_string, sep);
+    tokenizer access(access_tokens, sep);
+
+    // strings don't match, don't do anything
+    if (std::distance(std::begin(tokens), std::end(tokens)) !=
+        std::distance(std::begin(access), std::end(access)))
+        return lane_string;
+
+    std::string result_string = "";
+    const static std::string yes = "yes";
+
+    for (auto token_itr = std::begin(tokens), access_itr = std::begin(access);
+         token_itr != std::end(tokens);
+         ++token_itr, ++access_itr)
+    {
+        if (*access_itr == yes)
+        {
+            // we have to add this in front, because the next token could be invalid. Doing this on
+            // non-empty strings makes sure that the token string will be valid in the end
+            if (!result_string.empty())
+                result_string += '|';
+
+            result_string += *token_itr;
+        }
+    }
+    return result_string;
+}
+
+LaneID inline numLanesToTheRight(const engine::guidance::RouteStep &step)
+{
+    return step.intersections.front().lanes.first_lane_from_the_right;
+}
+
+LaneID inline numLanesToTheLeft(const engine::guidance::RouteStep &step)
+{
+    LaneID const total = step.intersections.front().lane_description.size();
+    return total - (step.intersections.front().lanes.lanes_in_turn +
+                    step.intersections.front().lanes.first_lane_from_the_right);
+}
+
+auto inline lanesToTheLeft(const engine::guidance::RouteStep &step)
+{
+    const auto &description = step.intersections.front().lane_description;
+    LaneID num_lanes_left = numLanesToTheLeft(step);
+    return boost::make_iterator_range(description.begin(), description.begin() + num_lanes_left);
+}
+
+auto inline lanesToTheRight(const engine::guidance::RouteStep &step)
+{
+    const auto &description = step.intersections.front().lane_description;
+    LaneID num_lanes_right = numLanesToTheRight(step);
+    return boost::make_iterator_range(description.end() - num_lanes_right, description.end());
+}
+
+inline std::uint8_t getLaneCountAtIntersection(const NodeID intersection_node,
+                                               const util::NodeBasedDynamicGraph &node_based_graph)
+{
+    std::uint8_t lanes = 0;
+    for (const EdgeID onto_edge : node_based_graph.GetAdjacentEdgeRange(intersection_node))
+        lanes = std::max(
+            lanes, node_based_graph.GetEdgeData(onto_edge).road_classification.GetNumberOfLanes());
+    return lanes;
+}
+
+inline bool obviousByRoadClass(const RoadClassification in_classification,
+                               const RoadClassification obvious_candidate,
+                               const RoadClassification compare_candidate)
+{
+    const bool has_high_priority = PRIORITY_DISTINCTION_FACTOR * obvious_candidate.GetPriority() <
+                                   compare_candidate.GetPriority();
+
+    const bool continues_on_same_class = in_classification == obvious_candidate;
+    return (has_high_priority && continues_on_same_class) ||
+           (!obvious_candidate.IsLowPriorityRoadClass() &&
+            !in_classification.IsLowPriorityRoadClass() &&
+            compare_candidate.IsLowPriorityRoadClass());
+}
+
+/* We use the sum of least squares to calculate a linear regression through our
+* coordinates.
+* This regression gives a good idea of how the road can be perceived and corrects for
+* initial and final corrections
+*/
+inline std::pair<util::Coordinate, util::Coordinate>
+leastSquareRegression(const std::vector<util::Coordinate> &coordinates)
+{
+    BOOST_ASSERT(coordinates.size() >= 2);
+    double sum_lon = 0, sum_lat = 0, sum_lon_lat = 0, sum_lon_lon = 0;
+    double min_lon = static_cast<double>(toFloating(coordinates.front().lon));
+    double max_lon = static_cast<double>(toFloating(coordinates.front().lon));
+    for (const auto coord : coordinates)
+    {
+        min_lon = std::min(min_lon, static_cast<double>(toFloating(coord.lon)));
+        max_lon = std::max(max_lon, static_cast<double>(toFloating(coord.lon)));
+        sum_lon += static_cast<double>(toFloating(coord.lon));
+        sum_lon_lon +=
+            static_cast<double>(toFloating(coord.lon)) * static_cast<double>(toFloating(coord.lon));
+        sum_lat += static_cast<double>(toFloating(coord.lat));
+        sum_lon_lat +=
+            static_cast<double>(toFloating(coord.lon)) * static_cast<double>(toFloating(coord.lat));
+    }
+
+    const auto dividend = coordinates.size() * sum_lon_lat - sum_lon * sum_lat;
+    const auto divisor = coordinates.size() * sum_lon_lon - sum_lon * sum_lon;
+    if (std::abs(divisor) < std::numeric_limits<double>::epsilon())
+        return std::make_pair(coordinates.front(), coordinates.back());
+
+    // slope of the regression line
+    const auto slope = dividend / divisor;
+    const auto intercept = (sum_lat - slope * sum_lon) / coordinates.size();
+
+    const auto GetLatAtLon = [intercept,
+                              slope](const util::FloatLongitude longitude) -> util::FloatLatitude {
+        return {intercept + slope * static_cast<double>((longitude))};
+    };
+
+    const util::Coordinate regression_first = {
+        toFixed(util::FloatLongitude{min_lon - 1}),
+        toFixed(util::FloatLatitude(GetLatAtLon(util::FloatLongitude{min_lon - 1})))};
+    const util::Coordinate regression_end = {
+        toFixed(util::FloatLongitude{max_lon + 1}),
+        toFixed(util::FloatLatitude(GetLatAtLon(util::FloatLongitude{max_lon + 1})))};
+
+    return {regression_first, regression_end};
 }
 
 } // namespace guidance

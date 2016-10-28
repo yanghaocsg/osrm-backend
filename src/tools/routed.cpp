@@ -1,5 +1,4 @@
 #include "server/server.hpp"
-#include "util/make_unique.hpp"
 #include "util/simple_logger.hpp"
 #include "util/version.hpp"
 
@@ -22,6 +21,7 @@
 #include <chrono>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <new>
 #include <string>
 #include <thread>
@@ -63,7 +63,8 @@ inline unsigned generateServerProgramOptions(const int argc,
                                              int &max_locations_trip,
                                              int &max_locations_viaroute,
                                              int &max_locations_distance_table,
-                                             int &max_locations_map_matching)
+                                             int &max_locations_map_matching,
+                                             int &max_results_nearest)
 {
     using boost::program_options::value;
     using boost::filesystem::path;
@@ -100,7 +101,10 @@ inline unsigned generateServerProgramOptions(const int argc,
          "Max. locations supported in distance table query") //
         ("max-matching-size",
          value<int>(&max_locations_map_matching)->default_value(100),
-         "Max. locations supported in map matching query");
+         "Max. locations supported in map matching query") //
+        ("max-nearest-size",
+         value<int>(&max_results_nearest)->default_value(100),
+         "Max. results supported in nearest query");
 
     // hidden options, will be allowed on command line, but will not be shown to the user
     boost::program_options::options_description hidden_options("Hidden options");
@@ -122,11 +126,19 @@ inline unsigned generateServerProgramOptions(const int argc,
 
     // parse command line options
     boost::program_options::variables_map option_variables;
-    boost::program_options::store(boost::program_options::command_line_parser(argc, argv)
-                                      .options(cmdline_options)
-                                      .positional(positional_options)
-                                      .run(),
-                                  option_variables);
+    try
+    {
+        boost::program_options::store(boost::program_options::command_line_parser(argc, argv)
+                                          .options(cmdline_options)
+                                          .positional(positional_options)
+                                          .run(),
+                                      option_variables);
+    }
+    catch (const boost::program_options::error &e)
+    {
+        util::SimpleLogger().Write(logWARNING) << "[error] " << e.what();
+        return INIT_FAILED;
+    }
 
     if (option_variables.count("version"))
     {
@@ -181,7 +193,8 @@ int main(int argc, const char *argv[]) try
                                                               config.max_locations_trip,
                                                               config.max_locations_viaroute,
                                                               config.max_locations_distance_table,
-                                                              config.max_locations_map_matching);
+                                                              config.max_locations_map_matching,
+                                                              config.max_results_nearest);
     if (init_result == INIT_OK_DO_NOT_START_ENGINE)
     {
         return EXIT_SUCCESS;
@@ -305,7 +318,7 @@ int main(int argc, const char *argv[]) try
 #endif
 
     auto routing_server = server::Server::CreateServer(ip_address, ip_port, requested_thread_num);
-    auto service_handler = util::make_unique<server::ServiceHandler>(config);
+    auto service_handler = std::make_unique<server::ServiceHandler>(config);
 
     routing_server->RegisterServiceHandler(std::move(service_handler));
 
@@ -369,10 +382,5 @@ catch (const std::bad_alloc &e)
     util::SimpleLogger().Write(logWARNING) << "[exception] " << e.what();
     util::SimpleLogger().Write(logWARNING)
         << "Please provide more memory or consider using a larger swapfile";
-    return EXIT_FAILURE;
-}
-catch (const std::exception &e)
-{
-    util::SimpleLogger().Write(logWARNING) << "[exception] " << e.what();
     return EXIT_FAILURE;
 }

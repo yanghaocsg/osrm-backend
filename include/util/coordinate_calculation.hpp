@@ -5,7 +5,9 @@
 
 #include <boost/optional.hpp>
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace osrm
 {
@@ -30,6 +32,31 @@ double haversineDistance(const Coordinate first_coordinate, const Coordinate sec
 
 double greatCircleDistance(const Coordinate first_coordinate, const Coordinate second_coordinate);
 
+// get the length of a full coordinate vector, using one of our basic functions to compute distances
+template <class BinaryOperation>
+double getLength(const std::vector<Coordinate> &coordinates, BinaryOperation op)
+{
+    if (coordinates.empty())
+        return 0.;
+
+    double result = 0;
+    const auto functor = [&result, op](const Coordinate lhs, const Coordinate rhs) {
+        result += op(lhs, rhs);
+        return false;
+    };
+    // side-effect find adding up distances
+    std::adjacent_find(coordinates.begin(), coordinates.end(), functor);
+
+    return result;
+}
+
+// Find the closest distance and location between coordinate and the line connecting source and
+// target:
+//             coordinate
+//                 |
+//                 |
+// source -------- x -------- target.
+// returns x as well as the distance between source and x as ratio ([0,1])
 inline std::pair<double, FloatCoordinate> projectPointOnSegment(const FloatCoordinate &source,
                                                                 const FloatCoordinate &target,
                                                                 const FloatCoordinate &coordinate)
@@ -98,6 +125,16 @@ double circleRadius(const Coordinate first_coordinate,
 // factor in [0,1]. Returns point along the straight line between from and to. 0 returns from, 1
 // returns to
 Coordinate interpolateLinear(double factor, const Coordinate from, const Coordinate to);
+
+// compute the signed area of a triangle
+double signedArea(const Coordinate first_coordinate,
+                  const Coordinate second_coordinate,
+                  const Coordinate third_coordinate);
+
+// check if a set of three coordinates is given in CCW order
+bool isCCW(const Coordinate first_coordinate,
+           const Coordinate second_coordinate,
+           const Coordinate third_coordinate);
 
 } // ns coordinate_calculation
 } // ns util

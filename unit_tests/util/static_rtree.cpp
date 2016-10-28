@@ -25,6 +25,11 @@
 #include <utility>
 #include <vector>
 
+#include <tbb/task_scheduler_init.h>
+
+// explicit TBB scheduler init to register resources cleanup at exit
+tbb::task_scheduler_init init(2);
+
 BOOST_AUTO_TEST_SUITE(static_rtree)
 
 using namespace osrm;
@@ -165,6 +170,8 @@ struct GraphFixture
             // to examine during tests.
             d.forward_segment_id = {pair.second, true};
             d.reverse_segment_id = {pair.first, true};
+            d.fwd_segment_position = 0;
+            d.packed_geometry_id = 0;
             edges.emplace_back(d);
         }
     }

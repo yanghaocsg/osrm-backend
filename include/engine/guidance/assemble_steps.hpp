@@ -33,8 +33,6 @@ namespace detail
 {
 std::pair<short, short> getDepartBearings(const LegGeometry &leg_geometry);
 std::pair<short, short> getArriveBearings(const LegGeometry &leg_geometry);
-std::pair<short, short> getIntermediateBearings(const LegGeometry &leg_geometry,
-                                                const std::size_t segment_index);
 } // ns detail
 
 inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &facade,
@@ -79,7 +77,7 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
                               std::vector<bool>({true}),
                               Intersection::NO_INDEX,
                               0,
-                              util::guidance::LaneTupel(),
+                              util::guidance::LaneTuple(),
                               {}};
 
     if (leg_data.size() > 0)
@@ -103,14 +101,17 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
             {
                 BOOST_ASSERT(segment_duration >= 0);
                 const auto name = facade.GetNameForID(step_name_id);
+                const auto ref = facade.GetRefForID(step_name_id);
                 const auto pronunciation = facade.GetPronunciationForID(step_name_id);
                 const auto destinations = facade.GetDestinationsForID(step_name_id);
                 const auto distance = leg_geometry.segment_distances[segment_index];
 
                 steps.push_back(RouteStep{step_name_id,
                                           std::move(name),
+                                          std::move(ref),
                                           std::move(pronunciation),
                                           std::move(destinations),
+                                          NO_ROTARY_NAME,
                                           NO_ROTARY_NAME,
                                           segment_duration / 10.0,
                                           distance,
@@ -129,12 +130,14 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
                     step_name_id = target_node.name_id;
                 }
 
-                bearings = detail::getIntermediateBearings(leg_geometry, segment_index);
+                // extract bearings
+                bearings = std::make_pair<std::uint16_t, std::uint16_t>(
+                    path_point.pre_turn_bearing.Get(), path_point.post_turn_bearing.Get());
                 const auto entry_class = facade.GetEntryClass(path_point.entry_classid);
                 const auto bearing_class =
                     facade.GetBearingClass(facade.GetBearingClassID(path_point.turn_via_node));
-                intersection.in = bearing_class.findMatchingBearing(
-                    util::bearing::reverseBearing(bearings.first));
+                auto bearing_data = bearing_class.getAvailableBearings();
+                intersection.in = bearing_class.findMatchingBearing(bearings.first);
                 intersection.out = bearing_class.findMatchingBearing(bearings.second);
                 intersection.location = facade.GetCoordinateOfNode(path_point.turn_via_node);
                 intersection.bearings.clear();
@@ -152,8 +155,10 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
                 {
                     intersection.entry.push_back(entry_class.allowsEntry(idx));
                 }
+                std::int16_t bearing_in_driving_direction =
+                    util::bearing::reverseBearing(std::round(bearings.first));
                 maneuver = {intersection.location,
-                            bearings.first,
+                            bearing_in_driving_direction,
                             bearings.second,
                             path_point.turn_instruction,
                             WaypointType::None,
@@ -167,8 +172,10 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
         BOOST_ASSERT(duration >= 0);
         steps.push_back(RouteStep{step_name_id,
                                   facade.GetNameForID(step_name_id),
+                                  facade.GetRefForID(step_name_id),
                                   facade.GetPronunciationForID(step_name_id),
                                   facade.GetDestinationsForID(step_name_id),
+                                  NO_ROTARY_NAME,
                                   NO_ROTARY_NAME,
                                   duration / 10.,
                                   distance,
@@ -192,8 +199,10 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
 
         steps.push_back(RouteStep{source_node.name_id,
                                   facade.GetNameForID(source_node.name_id),
+                                  facade.GetRefForID(source_node.name_id),
                                   facade.GetPronunciationForID(source_node.name_id),
                                   facade.GetDestinationsForID(source_node.name_id),
+                                  NO_ROTARY_NAME,
                                   NO_ROTARY_NAME,
                                   duration / 10.,
                                   leg_geometry.segment_distances[segment_index],
@@ -220,14 +229,16 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
         std::vector<bool>({true}),
         0,
         Intersection::NO_INDEX,
-        util::guidance::LaneTupel(),
+        util::guidance::LaneTuple(),
         {}};
 
     BOOST_ASSERT(!leg_geometry.locations.empty());
     steps.push_back(RouteStep{target_node.name_id,
                               facade.GetNameForID(target_node.name_id),
+                              facade.GetRefForID(target_node.name_id),
                               facade.GetPronunciationForID(target_node.name_id),
                               facade.GetDestinationsForID(target_node.name_id),
+                              NO_ROTARY_NAME,
                               NO_ROTARY_NAME,
                               ZERO_DURATION,
                               ZERO_DISTANCE,
@@ -247,7 +258,8 @@ inline std::vector<RouteStep> assembleSteps(const datafacade::BaseDataFacade &fa
     BOOST_ASSERT(steps.back().intersections.front().entry.size() == 1);
     BOOST_ASSERT(steps.back().maneuver.waypoint_type == WaypointType::Arrive);
     BOOST_ASSERT(steps.back().intersections.front().lanes.lanes_in_turn == 0);
-    BOOST_ASSERT(steps.back().intersections.front().lanes.first_lane_from_the_right == INVALID_LANEID);
+    BOOST_ASSERT(steps.back().intersections.front().lanes.first_lane_from_the_right ==
+                 INVALID_LANEID);
     BOOST_ASSERT(steps.back().intersections.front().lane_description.empty());
     return steps;
 }

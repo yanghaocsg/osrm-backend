@@ -3,6 +3,7 @@
 
 // implements all data storage when shared memory _IS_ used
 
+#include "storage/shared_barriers.hpp"
 #include "storage/shared_datatype.hpp"
 #include "storage/shared_memory.hpp"
 #include "engine/datafacade/datafacade_base.hpp"
@@ -16,7 +17,8 @@
 #include "util/guidance/turn_lanes.hpp"
 
 #include "engine/geospatial_query.hpp"
-#include "util/make_unique.hpp"
+#include "util/packed_vector.hpp"
+#include "util/guidance/turn_bearing.hpp"
 #include "util/range_table.hpp"
 #include "util/rectangle.hpp"
 #include "util/simple_logger.hpp"
@@ -24,20 +26,19 @@
 #include "util/static_rtree.hpp"
 #include "util/typedefs.hpp"
 
-#include <cstddef>
+#include <boost/assert.hpp>
+#include <boost/interprocess/sync/named_sharable_mutex.hpp>
+#include <boost/interprocess/sync/sharable_lock.hpp>
+#include <boost/thread/tss.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include <boost/assert.hpp>
-#include <boost/thread/lock_guard.hpp>
-#include <boost/thread/shared_mutex.hpp>
-#include <boost/thread/tss.hpp>
 
 namespace osrm
 {
@@ -64,11 +65,11 @@ class SharedDataFacade final : public BaseDataFacade
 
     storage::SharedDataLayout *data_layout;
     char *shared_memory;
-    storage::SharedDataTimestamp *data_timestamp_ptr;
 
-    storage::SharedDataType CURRENT_LAYOUT;
-    storage::SharedDataType CURRENT_DATA;
-    unsigned CURRENT_TIMESTAMP;
+    std::shared_ptr<storage::SharedBarriers> shared_barriers;
+    storage::SharedDataType layout_region;
+    storage::SharedDataType data_region;
+    unsigned shared_timestamp;
 
     unsigned m_check_sum;
     std::unique_ptr<QueryGraph> m_query_graph;
@@ -79,15 +80,19 @@ class SharedDataFacade final : public BaseDataFacade
 
     util::ShM<util::Coordinate, true>::vector m_coordinate_list;
     util::PackedVector<OSMNodeID, true> m_osmnodeid_list;
-    util::ShM<NodeID, true>::vector m_via_node_list;
+    util::ShM<GeometryID, true>::vector m_via_geometry_list;
     util::ShM<unsigned, true>::vector m_name_ID_list;
     util::ShM<LaneDataID, true>::vector m_lane_data_id;
     util::ShM<extractor::guidance::TurnInstruction, true>::vector m_turn_instruction_list;
     util::ShM<extractor::TravelMode, true>::vector m_travel_mode_list;
+    util::ShM<util::guidance::TurnBearing, true>::vector m_pre_turn_bearing;
+    util::ShM<util::guidance::TurnBearing, true>::vector m_post_turn_bearing;
     util::ShM<char, true>::vector m_names_char_list;
     util::ShM<unsigned, true>::vector m_name_begin_indices;
     util::ShM<unsigned, true>::vector m_geometry_indices;
-    util::ShM<extractor::CompressedEdgeContainer::CompressedEdge, true>::vector m_geometry_list;
+    util::ShM<NodeID, true>::vector m_geometry_node_list;
+    util::ShM<EdgeWeight, true>::vector m_geometry_fwd_weight_list;
+    util::ShM<EdgeWeight, true>::vector m_geometry_rev_weight_list;
     util::ShM<bool, true>::vector m_is_core_node;
     util::ShM<uint8_t, true>::vector m_datasource_list;
     util::ShM<std::uint32_t, true>::vector m_lane_description_offsets;
@@ -96,18 +101,18 @@ class SharedDataFacade final : public BaseDataFacade
     util::ShM<char, true>::vector m_datasource_name_data;
     util::ShM<std::size_t, true>::vector m_datasource_name_offsets;
     util::ShM<std::size_t, true>::vector m_datasource_name_lengths;
-    util::ShM<util::guidance::LaneTupelIdPair, true>::vector m_lane_tupel_id_pairs;
+    util::ShM<util::guidance::LaneTupleIdPair, true>::vector m_lane_tupel_id_pairs;
 
     std::unique_ptr<SharedRTree> m_static_rtree;
     std::unique_ptr<SharedGeospatialQuery> m_geospatial_query;
     boost::filesystem::path file_index_path;
 
     std::shared_ptr<util::RangeTable<16, true>> m_name_table;
-
     // bearing classes by node based node
     util::ShM<BearingClassID, true>::vector m_bearing_class_id_table;
     // entry class IDs
     util::ShM<EntryClassID, true>::vector m_entry_class_id_list;
+
     // the look-up table for entry classes. An entry class lists the possibility of entry for all
     // available turns. Such a class id is stored with every edge.
     util::ShM<util::guidance::EntryClass, true>::vector m_entry_class_table;
@@ -143,6 +148,16 @@ class SharedDataFacade final : public BaseDataFacade
     {
         BOOST_ASSERT_MSG(!m_coordinate_list.empty(), "coordinates must be loaded before r-tree");
 
+        const auto file_index_ptr = data_layout->GetBlockPtr<char>(
+            shared_memory, storage::SharedDataLayout::FILE_INDEX_PATH);
+        file_index_path = boost::filesystem::path(file_index_ptr);
+        if (!boost::filesystem::exists(file_index_path))
+        {
+            util::SimpleLogger().Write(logDEBUG) << "Leaf file name " << file_index_path.string();
+            throw util::exception("Could not load " + file_index_path.string() +
+                                  "Is any data loaded into shared memory?");
+        }
+
         auto tree_ptr = data_layout->GetBlockPtr<RTreeNode>(
             shared_memory, storage::SharedDataLayout::R_SEARCH_TREE);
         m_static_rtree.reset(
@@ -171,13 +186,18 @@ class SharedDataFacade final : public BaseDataFacade
 
     void LoadNodeAndEdgeInformation()
     {
-        auto coordinate_list_ptr = data_layout->GetBlockPtr<util::Coordinate>(
+        const auto coordinate_list_ptr = data_layout->GetBlockPtr<util::Coordinate>(
             shared_memory, storage::SharedDataLayout::COORDINATE_LIST);
         m_coordinate_list.reset(
             coordinate_list_ptr,
             data_layout->num_entries[storage::SharedDataLayout::COORDINATE_LIST]);
 
-        auto osmnodeid_list_ptr = data_layout->GetBlockPtr<std::uint64_t>(
+        for (unsigned i = 0; i < m_coordinate_list.size(); ++i)
+        {
+            BOOST_ASSERT(GetCoordinateOfNode(i).IsValid());
+        }
+
+        const auto osmnodeid_list_ptr = data_layout->GetBlockPtr<std::uint64_t>(
             shared_memory, storage::SharedDataLayout::OSM_NODE_ID_LIST);
         m_osmnodeid_list.reset(
             osmnodeid_list_ptr,
@@ -186,26 +206,27 @@ class SharedDataFacade final : public BaseDataFacade
         m_osmnodeid_list.set_number_of_entries(
             data_layout->num_entries[storage::SharedDataLayout::COORDINATE_LIST]);
 
-        auto travel_mode_list_ptr = data_layout->GetBlockPtr<extractor::TravelMode>(
+        const auto travel_mode_list_ptr = data_layout->GetBlockPtr<extractor::TravelMode>(
             shared_memory, storage::SharedDataLayout::TRAVEL_MODE);
         util::ShM<extractor::TravelMode, true>::vector travel_mode_list(
             travel_mode_list_ptr, data_layout->num_entries[storage::SharedDataLayout::TRAVEL_MODE]);
         m_travel_mode_list = std::move(travel_mode_list);
 
-        auto lane_data_id_ptr = data_layout->GetBlockPtr<LaneDataID>(
+        const auto lane_data_id_ptr = data_layout->GetBlockPtr<LaneDataID>(
             shared_memory, storage::SharedDataLayout::LANE_DATA_ID);
         util::ShM<LaneDataID, true>::vector lane_data_id(
             lane_data_id_ptr, data_layout->num_entries[storage::SharedDataLayout::LANE_DATA_ID]);
         m_lane_data_id = std::move(lane_data_id);
 
-        auto lane_tupel_id_pair_ptr = data_layout->GetBlockPtr<util::guidance::LaneTupelIdPair>(
-            shared_memory, storage::SharedDataLayout::TURN_LANE_DATA);
-        util::ShM<util::guidance::LaneTupelIdPair, true>::vector lane_tupel_id_pair(
+        const auto lane_tupel_id_pair_ptr =
+            data_layout->GetBlockPtr<util::guidance::LaneTupleIdPair>(
+                shared_memory, storage::SharedDataLayout::TURN_LANE_DATA);
+        util::ShM<util::guidance::LaneTupleIdPair, true>::vector lane_tupel_id_pair(
             lane_tupel_id_pair_ptr,
             data_layout->num_entries[storage::SharedDataLayout::TURN_LANE_DATA]);
         m_lane_tupel_id_pairs = std::move(lane_tupel_id_pair);
 
-        auto turn_instruction_list_ptr =
+        const auto turn_instruction_list_ptr =
             data_layout->GetBlockPtr<extractor::guidance::TurnInstruction>(
                 shared_memory, storage::SharedDataLayout::TURN_INSTRUCTION);
         util::ShM<extractor::guidance::TurnInstruction, true>::vector turn_instruction_list(
@@ -213,27 +234,42 @@ class SharedDataFacade final : public BaseDataFacade
             data_layout->num_entries[storage::SharedDataLayout::TURN_INSTRUCTION]);
         m_turn_instruction_list = std::move(turn_instruction_list);
 
-        auto name_id_list_ptr = data_layout->GetBlockPtr<unsigned>(
+        const auto name_id_list_ptr = data_layout->GetBlockPtr<unsigned>(
             shared_memory, storage::SharedDataLayout::NAME_ID_LIST);
         util::ShM<unsigned, true>::vector name_id_list(
             name_id_list_ptr, data_layout->num_entries[storage::SharedDataLayout::NAME_ID_LIST]);
         m_name_ID_list = std::move(name_id_list);
 
-        auto entry_class_id_list_ptr = data_layout->GetBlockPtr<EntryClassID>(
+        const auto entry_class_id_list_ptr = data_layout->GetBlockPtr<EntryClassID>(
             shared_memory, storage::SharedDataLayout::ENTRY_CLASSID);
         typename util::ShM<EntryClassID, true>::vector entry_class_id_list(
             entry_class_id_list_ptr,
             data_layout->num_entries[storage::SharedDataLayout::ENTRY_CLASSID]);
         m_entry_class_id_list = std::move(entry_class_id_list);
+
+        const auto pre_turn_bearing_ptr = data_layout->GetBlockPtr<util::guidance::TurnBearing>(
+            shared_memory, storage::SharedDataLayout::PRE_TURN_BEARING);
+        typename util::ShM<util::guidance::TurnBearing, true>::vector pre_turn_bearing(
+            pre_turn_bearing_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::PRE_TURN_BEARING]);
+        m_pre_turn_bearing = std::move(pre_turn_bearing);
+
+        const auto post_turn_bearing_ptr = data_layout->GetBlockPtr<util::guidance::TurnBearing>(
+            shared_memory, storage::SharedDataLayout::POST_TURN_BEARING);
+        typename util::ShM<util::guidance::TurnBearing, true>::vector post_turn_bearing(
+            post_turn_bearing_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::POST_TURN_BEARING]);
+        m_post_turn_bearing = std::move(post_turn_bearing);
     }
 
     void LoadViaNodeList()
     {
-        auto via_node_list_ptr = data_layout->GetBlockPtr<NodeID>(
+        auto via_geometry_list_ptr = data_layout->GetBlockPtr<GeometryID>(
             shared_memory, storage::SharedDataLayout::VIA_NODE_LIST);
-        util::ShM<NodeID, true>::vector via_node_list(
-            via_node_list_ptr, data_layout->num_entries[storage::SharedDataLayout::VIA_NODE_LIST]);
-        m_via_node_list = std::move(via_node_list);
+        util::ShM<GeometryID, true>::vector via_geometry_list(
+            via_geometry_list_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::VIA_NODE_LIST]);
+        m_via_geometry_list = std::move(via_geometry_list);
     }
 
     void LoadNames()
@@ -251,7 +287,7 @@ class SharedDataFacade final : public BaseDataFacade
             shared_memory, storage::SharedDataLayout::NAME_CHAR_LIST);
         util::ShM<char, true>::vector names_char_list(
             names_list_ptr, data_layout->num_entries[storage::SharedDataLayout::NAME_CHAR_LIST]);
-        m_name_table = util::make_unique<util::RangeTable<16, true>>(
+        m_name_table = std::make_unique<util::RangeTable<16, true>>(
             name_offsets, name_blocks, static_cast<unsigned>(names_char_list.size()));
 
         m_names_char_list = std::move(names_char_list);
@@ -276,11 +312,6 @@ class SharedDataFacade final : public BaseDataFacade
 
     void LoadCoreInformation()
     {
-        if (data_layout->num_entries[storage::SharedDataLayout::CORE_MARKER] <= 0)
-        {
-            return;
-        }
-
         auto core_marker_ptr = data_layout->GetBlockPtr<unsigned>(
             shared_memory, storage::SharedDataLayout::CORE_MARKER);
         util::ShM<bool, true>::vector is_core_node(
@@ -297,13 +328,26 @@ class SharedDataFacade final : public BaseDataFacade
             data_layout->num_entries[storage::SharedDataLayout::GEOMETRIES_INDEX]);
         m_geometry_indices = std::move(geometry_begin_indices);
 
-        auto geometries_list_ptr =
-            data_layout->GetBlockPtr<extractor::CompressedEdgeContainer::CompressedEdge>(
-                shared_memory, storage::SharedDataLayout::GEOMETRIES_LIST);
-        util::ShM<extractor::CompressedEdgeContainer::CompressedEdge, true>::vector geometry_list(
-            geometries_list_ptr,
-            data_layout->num_entries[storage::SharedDataLayout::GEOMETRIES_LIST]);
-        m_geometry_list = std::move(geometry_list);
+        auto geometries_node_list_ptr = data_layout->GetBlockPtr<NodeID>(
+            shared_memory, storage::SharedDataLayout::GEOMETRIES_NODE_LIST);
+        util::ShM<NodeID, true>::vector geometry_node_list(
+            geometries_node_list_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::GEOMETRIES_NODE_LIST]);
+        m_geometry_node_list = std::move(geometry_node_list);
+
+        auto geometries_fwd_weight_list_ptr = data_layout->GetBlockPtr<EdgeWeight>(
+            shared_memory, storage::SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST);
+        util::ShM<EdgeWeight, true>::vector geometry_fwd_weight_list(
+            geometries_fwd_weight_list_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::GEOMETRIES_FWD_WEIGHT_LIST]);
+        m_geometry_fwd_weight_list = std::move(geometry_fwd_weight_list);
+
+        auto geometries_rev_weight_list_ptr = data_layout->GetBlockPtr<EdgeWeight>(
+            shared_memory, storage::SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST);
+        util::ShM<EdgeWeight, true>::vector geometry_rev_weight_list(
+            geometries_rev_weight_list_ptr,
+            data_layout->num_entries[storage::SharedDataLayout::GEOMETRIES_REV_WEIGHT_LIST]);
+        m_geometry_rev_weight_list = std::move(geometry_rev_weight_list);
 
         auto datasources_list_ptr = data_layout->GetBlockPtr<uint8_t>(
             shared_memory, storage::SharedDataLayout::DATASOURCES_LIST);
@@ -358,7 +402,7 @@ class SharedDataFacade final : public BaseDataFacade
         util::ShM<IndexBlock, true>::vector bearing_blocks(
             blocks_ptr, data_layout->num_entries[storage::SharedDataLayout::BEARING_BLOCKS]);
 
-        m_bearing_ranges_table = util::make_unique<util::RangeTable<16, true>>(
+        m_bearing_ranges_table = std::make_unique<util::RangeTable<16, true>>(
             bearing_offsets, bearing_blocks, static_cast<unsigned>(m_bearing_values_table.size()));
 
         auto entry_class_ptr = data_layout->GetBlockPtr<util::guidance::EntryClass>(
@@ -369,104 +413,70 @@ class SharedDataFacade final : public BaseDataFacade
     }
 
   public:
-    virtual ~SharedDataFacade() {}
-
-    boost::shared_mutex data_mutex;
-
-    SharedDataFacade()
+    // this function handle the deallocation of the shared memory it we can prove it will not be
+    // used anymore
+    virtual ~SharedDataFacade()
     {
-        if (!storage::SharedMemory::RegionExists(storage::CURRENT_REGIONS))
+        boost::interprocess::scoped_lock<boost::interprocess::named_sharable_mutex> exclusive_lock(
+            data_region == storage::DATA_1 ? shared_barriers->regions_1_mutex
+                                           : shared_barriers->regions_2_mutex,
+            boost::interprocess::defer_lock);
+
+        // if this returns false this is still in use
+        if (exclusive_lock.try_lock())
         {
-            throw util::exception(
-                "No shared memory blocks found, have you forgotten to run osrm-datastore?");
-        }
-        data_timestamp_ptr = static_cast<storage::SharedDataTimestamp *>(
-            storage::makeSharedMemory(
-                storage::CURRENT_REGIONS, sizeof(storage::SharedDataTimestamp), false, false)
-                ->Ptr());
-        CURRENT_LAYOUT = storage::LAYOUT_NONE;
-        CURRENT_DATA = storage::DATA_NONE;
-        CURRENT_TIMESTAMP = 0;
+            // Now check if this is still the newest dataset
+            const boost::interprocess::sharable_lock<boost::interprocess::named_upgradable_mutex>
+                lock(shared_barriers->current_regions_mutex);
 
-        // load data
-        CheckAndReloadFacade();
-    }
+            auto shared_regions = storage::makeSharedMemory(storage::CURRENT_REGIONS);
+            const auto current_timestamp =
+                static_cast<const storage::SharedDataTimestamp *>(shared_regions->Ptr());
 
-    void CheckAndReloadFacade()
-    {
-        if (CURRENT_LAYOUT != data_timestamp_ptr->layout ||
-            CURRENT_DATA != data_timestamp_ptr->data ||
-            CURRENT_TIMESTAMP != data_timestamp_ptr->timestamp)
-        {
-            // Get exclusive lock
-            util::SimpleLogger().Write(logDEBUG) << "Updates available, getting exclusive lock";
-            const boost::lock_guard<boost::shared_mutex> lock(data_mutex);
-
-            if (CURRENT_LAYOUT != data_timestamp_ptr->layout ||
-                CURRENT_DATA != data_timestamp_ptr->data)
+            if (current_timestamp->timestamp == shared_timestamp)
             {
-                // release the previous shared memory segments
-                storage::SharedMemory::Remove(CURRENT_LAYOUT);
-                storage::SharedMemory::Remove(CURRENT_DATA);
-
-                CURRENT_LAYOUT = data_timestamp_ptr->layout;
-                CURRENT_DATA = data_timestamp_ptr->data;
-                CURRENT_TIMESTAMP = 0; // Force trigger a reload
-
-                util::SimpleLogger().Write(logDEBUG)
-                    << "Current layout was different to new layout, swapping";
+                util::SimpleLogger().Write(logDEBUG) << "Retaining data with shared timestamp "
+                                                     << shared_timestamp;
             }
             else
             {
-                util::SimpleLogger().Write(logDEBUG)
-                    << "Current layout was same to new layout, not swapping";
+                storage::SharedMemory::Remove(data_region);
+                storage::SharedMemory::Remove(layout_region);
             }
-
-            if (CURRENT_TIMESTAMP != data_timestamp_ptr->timestamp)
-            {
-                CURRENT_TIMESTAMP = data_timestamp_ptr->timestamp;
-
-                util::SimpleLogger().Write(logDEBUG) << "Performing data reload";
-                m_layout_memory.reset(storage::makeSharedMemory(CURRENT_LAYOUT));
-
-                data_layout = static_cast<storage::SharedDataLayout *>(m_layout_memory->Ptr());
-
-                m_large_memory.reset(storage::makeSharedMemory(CURRENT_DATA));
-                shared_memory = (char *)(m_large_memory->Ptr());
-
-                const auto file_index_ptr = data_layout->GetBlockPtr<char>(
-                    shared_memory, storage::SharedDataLayout::FILE_INDEX_PATH);
-                file_index_path = boost::filesystem::path(file_index_ptr);
-                if (!boost::filesystem::exists(file_index_path))
-                {
-                    util::SimpleLogger().Write(logDEBUG) << "Leaf file name "
-                                                         << file_index_path.string();
-                    throw util::exception("Could not load leaf index file. "
-                                          "Is any data loaded into shared memory?");
-                }
-
-                LoadGraph();
-                LoadChecksum();
-                LoadNodeAndEdgeInformation();
-                LoadGeometries();
-                LoadTimestamp();
-                LoadViaNodeList();
-                LoadNames();
-                LoadTurnLaneDescriptions();
-                LoadCoreInformation();
-                LoadProfileProperties();
-                LoadRTree();
-                LoadIntersectionClasses();
-
-                util::SimpleLogger().Write() << "number of geometries: "
-                                             << m_coordinate_list.size();
-                for (unsigned i = 0; i < m_coordinate_list.size(); ++i)
-                {
-                    BOOST_ASSERT(GetCoordinateOfNode(i).IsValid());
-                }
-            }
-            util::SimpleLogger().Write(logDEBUG) << "Releasing exclusive lock";
         }
+    }
+
+    SharedDataFacade(const std::shared_ptr<storage::SharedBarriers> &shared_barriers_,
+                     storage::SharedDataType layout_region_,
+                     storage::SharedDataType data_region_,
+                     unsigned shared_timestamp_)
+        : shared_barriers(shared_barriers_), layout_region(layout_region_),
+          data_region(data_region_), shared_timestamp(shared_timestamp_)
+    {
+        util::SimpleLogger().Write(logDEBUG) << "Loading new data with shared timestamp "
+                                             << shared_timestamp;
+
+        BOOST_ASSERT(storage::SharedMemory::RegionExists(layout_region));
+        m_layout_memory = storage::makeSharedMemory(layout_region);
+
+        data_layout = static_cast<storage::SharedDataLayout *>(m_layout_memory->Ptr());
+
+        BOOST_ASSERT(storage::SharedMemory::RegionExists(data_region));
+        m_large_memory = storage::makeSharedMemory(data_region);
+        shared_memory = (char *)(m_large_memory->Ptr());
+
+        LoadGraph();
+        LoadChecksum();
+        LoadNodeAndEdgeInformation();
+        LoadGeometries();
+        LoadTimestamp();
+        LoadViaNodeList();
+        LoadNames();
+        LoadTurnLaneDescriptions();
+        LoadCoreInformation();
+        LoadProfileProperties();
+        LoadRTree();
+        LoadIntersectionClasses();
     }
 
     // search graph access
@@ -512,6 +522,13 @@ class SharedDataFacade final : public BaseDataFacade
         return m_query_graph->FindEdgeIndicateIfReverse(from, to, result);
     }
 
+    EdgeID FindSmallestEdge(const NodeID from,
+                            const NodeID to,
+                            std::function<bool(EdgeData)> filter) const override final
+    {
+        return m_query_graph->FindSmallestEdge(from, to, filter);
+    }
+
     // node and edge information access
     util::Coordinate GetCoordinateOfNode(const NodeID id) const override final
     {
@@ -523,40 +540,105 @@ class SharedDataFacade final : public BaseDataFacade
         return m_osmnodeid_list.at(id);
     }
 
-    virtual void GetUncompressedGeometry(const EdgeID id,
-                                         std::vector<NodeID> &result_nodes) const override final
+    virtual std::vector<NodeID> GetUncompressedForwardGeometry(const EdgeID id) const override final
     {
+        /*
+         * NodeID's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_node_list vector. For
+         * forward geometries of bi-directional edges, edges 2 to
+         * n of that edge need to be read.
+         */
         const unsigned begin = m_geometry_indices.at(id);
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_nodes.clear();
-        result_nodes.reserve(end - begin);
-        std::for_each(m_geometry_list.begin() + begin,
-                      m_geometry_list.begin() + end,
-                      [&](const osrm::extractor::CompressedEdgeContainer::CompressedEdge &edge) {
-                          result_nodes.emplace_back(edge.node_id);
-                      });
+        std::vector<NodeID> result_nodes;
+
+        result_nodes.resize(end - begin);
+
+        std::copy(m_geometry_node_list.begin() + begin,
+                  m_geometry_node_list.begin() + end,
+                  result_nodes.begin());
+
+        return result_nodes;
     }
 
-    virtual void
-    GetUncompressedWeights(const EdgeID id,
-                           std::vector<EdgeWeight> &result_weights) const override final
+    virtual std::vector<NodeID> GetUncompressedReverseGeometry(const EdgeID id) const override final
     {
+        /*
+         * NodeID's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_node_list vector.
+         * */
         const unsigned begin = m_geometry_indices.at(id);
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_weights.clear();
-        result_weights.reserve(end - begin);
-        std::for_each(m_geometry_list.begin() + begin,
-                      m_geometry_list.begin() + end,
-                      [&](const osrm::extractor::CompressedEdgeContainer::CompressedEdge &edge) {
-                          result_weights.emplace_back(edge.weight);
-                      });
+        std::vector<NodeID> result_nodes;
+
+        result_nodes.resize(end - begin);
+
+        std::copy(m_geometry_node_list.rbegin() + (m_geometry_node_list.size() - end),
+                  m_geometry_node_list.rbegin() + (m_geometry_node_list.size() - begin),
+                  result_nodes.begin());
+
+        return result_nodes;
     }
 
-    virtual unsigned GetGeometryIndexForEdgeID(const unsigned id) const override final
+    virtual std::vector<EdgeWeight>
+    GetUncompressedForwardWeights(const EdgeID id) const override final
     {
-        return m_via_node_list.at(id);
+        /*
+         * EdgeWeights's for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_fwd_weight_list vector.
+         * */
+        const unsigned begin = m_geometry_indices.at(id) + 1;
+        const unsigned end = m_geometry_indices.at(id + 1);
+
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(end - begin);
+
+        std::copy(m_geometry_fwd_weight_list.begin() + begin,
+                  m_geometry_fwd_weight_list.begin() + end,
+                  result_weights.begin());
+
+        return result_weights;
+    }
+
+    virtual std::vector<EdgeWeight>
+    GetUncompressedReverseWeights(const EdgeID id) const override final
+    {
+        /*
+         * EdgeWeights for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_rev_weight_list vector. For
+         * reverse weights of bi-directional edges, edges 1 to
+         * n-1 of that edge need to be read in reverse.
+         */
+        const unsigned begin = m_geometry_indices.at(id);
+        const unsigned end = m_geometry_indices.at(id + 1) - 1;
+
+        std::vector<EdgeWeight> result_weights;
+        result_weights.resize(end - begin);
+
+        std::copy(m_geometry_rev_weight_list.rbegin() + (m_geometry_rev_weight_list.size() - end),
+                  m_geometry_rev_weight_list.rbegin() + (m_geometry_rev_weight_list.size() - begin),
+                  result_weights.begin());
+
+        return result_weights;
+    }
+
+    virtual GeometryID GetGeometryIndexForEdgeID(const unsigned id) const override final
+    {
+        return m_via_geometry_list.at(id);
     }
 
     extractor::guidance::TurnInstruction
@@ -712,12 +794,21 @@ class SharedDataFacade final : public BaseDataFacade
         return result;
     }
 
+    std::string GetRefForID(const unsigned name_id) const override final
+    {
+        // We store the ref after the name, destination and pronunciation of a street.
+        // We do this to get around the street length limit of 255 which would hit
+        // if we concatenate these. Order (see extractor_callbacks):
+        // name (0), destination (1), pronunciation (2), ref (3)
+        return GetNameForID(name_id + 3);
+    }
+
     std::string GetPronunciationForID(const unsigned name_id) const override final
     {
         // We store the pronunciation after the name and destination of a street.
         // We do this to get around the street length limit of 255 which would hit
         // if we concatenate these. Order (see extractor_callbacks):
-        // name (0), destination (1), pronunciation (2)
+        // name (0), destination (1), pronunciation (2), ref (3)
         return GetNameForID(name_id + 2);
     }
 
@@ -726,7 +817,7 @@ class SharedDataFacade final : public BaseDataFacade
         // We store the destination after the name of a street.
         // We do this to get around the street length limit of 255 which would hit
         // if we concatenate these. Order (see extractor_callbacks):
-        // name (0), destination (1), pronunciation (2)
+        // name (0), destination (1), pronunciation (2), ref (3)
         return GetNameForID(name_id + 1);
     }
 
@@ -744,15 +835,23 @@ class SharedDataFacade final : public BaseDataFacade
 
     // Returns the data source ids that were used to supply the edge
     // weights.
-    virtual void
-    GetUncompressedDatasources(const EdgeID id,
-                               std::vector<uint8_t> &result_datasources) const override final
+    virtual std::vector<uint8_t>
+    GetUncompressedForwardDatasources(const EdgeID id) const override final
     {
-        const unsigned begin = m_geometry_indices.at(id);
+        /*
+         * Data sources for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_list vector. For
+         * forward datasources of bi-directional edges, edges 2 to
+         * n of that edge need to be read.
+         */
+        const unsigned begin = m_geometry_indices.at(id) + 1;
         const unsigned end = m_geometry_indices.at(id + 1);
 
-        result_datasources.clear();
-        result_datasources.reserve(end - begin);
+        std::vector<uint8_t> result_datasources;
+        result_datasources.resize(end - begin);
 
         // If there was no datasource info, return an array of 0's.
         if (m_datasource_list.empty())
@@ -764,11 +863,50 @@ class SharedDataFacade final : public BaseDataFacade
         }
         else
         {
-            std::for_each(
-                m_datasource_list.begin() + begin,
-                m_datasource_list.begin() + end,
-                [&](const uint8_t &datasource_id) { result_datasources.push_back(datasource_id); });
+            std::copy(m_datasource_list.begin() + begin,
+                      m_datasource_list.begin() + end,
+                      result_datasources.begin());
         }
+
+        return result_datasources;
+    }
+
+    // Returns the data source ids that were used to supply the edge
+    // weights.
+    virtual std::vector<uint8_t>
+    GetUncompressedReverseDatasources(const EdgeID id) const override final
+    {
+        /*
+         * Datasources for geometries are stored in one place for
+         * both forward and reverse segments along the same bi-
+         * directional edge. The m_geometry_indices stores
+         * refences to where to find the beginning of the bi-
+         * directional edge in the m_geometry_list vector. For
+         * reverse datasources of bi-directional edges, edges 1 to
+         * n-1 of that edge need to be read in reverse.
+         */
+        const unsigned begin = m_geometry_indices.at(id);
+        const unsigned end = m_geometry_indices.at(id + 1) - 1;
+
+        std::vector<uint8_t> result_datasources;
+        result_datasources.resize(end - begin);
+
+        // If there was no datasource info, return an array of 0's.
+        if (m_datasource_list.empty())
+        {
+            for (unsigned i = 0; i < end - begin; ++i)
+            {
+                result_datasources.push_back(0);
+            }
+        }
+        else
+        {
+            std::copy(m_datasource_list.rbegin() + (m_datasource_list.size() - end),
+                      m_datasource_list.rbegin() + (m_datasource_list.size() - begin),
+                      result_datasources.begin());
+        }
+
+        return result_datasources;
     }
 
     virtual std::string GetDatasourceName(const uint8_t datasource_name_id) const override final
@@ -816,6 +954,15 @@ class SharedDataFacade final : public BaseDataFacade
         return m_entry_class_id_list.at(eid);
     }
 
+    util::guidance::TurnBearing PreTurnBearing(const EdgeID eid) const override final
+    {
+        return m_pre_turn_bearing.at(eid);
+    }
+    util::guidance::TurnBearing PostTurnBearing(const EdgeID eid) const override final
+    {
+        return m_post_turn_bearing.at(eid);
+    }
+
     util::guidance::EntryClass GetEntryClass(const EntryClassID entry_class_id) const override final
     {
         return m_entry_class_table.at(entry_class_id);
@@ -826,7 +973,7 @@ class SharedDataFacade final : public BaseDataFacade
         return INVALID_LANE_DATAID != m_lane_data_id.at(id);
     }
 
-    util::guidance::LaneTupelIdPair GetLaneData(const EdgeID id) const override final
+    util::guidance::LaneTupleIdPair GetLaneData(const EdgeID id) const override final
     {
         BOOST_ASSERT(hasLaneData(id));
         return m_lane_tupel_id_pairs.at(m_lane_data_id.at(id));
@@ -840,7 +987,8 @@ class SharedDataFacade final : public BaseDataFacade
         else
             return extractor::guidance::TurnLaneDescription(
                 m_lane_description_masks.begin() + m_lane_description_offsets[lane_description_id],
-                m_lane_description_masks.begin() + m_lane_description_offsets[lane_description_id + 1]);
+                m_lane_description_masks.begin() +
+                    m_lane_description_offsets[lane_description_id + 1]);
     }
 };
 }

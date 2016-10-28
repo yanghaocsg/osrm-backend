@@ -1,5 +1,6 @@
 #include "extractor/guidance/turn_discovery.hpp"
 #include "extractor/guidance/constants.hpp"
+#include "util/coordinate_calculation.hpp"
 
 namespace osrm
 {
@@ -34,9 +35,14 @@ bool findPreviousIntersection(const NodeID node_v,
      */
     const constexpr double COMBINE_DISTANCE_CUTOFF = 30;
 
+    const auto coordinate_extractor = turn_analysis.getGenerator().GetCoordinateExtractor();
+    const auto via_edge_length = util::coordinate_calculation::getLength(
+        coordinate_extractor.GetForwardCoordinatesAlongRoad(node_v, via_edge),
+        &util::coordinate_calculation::haversineDistance);
+
     // we check if via-edge is too short. In this case the previous turn cannot influence the turn
     // at via_edge and the intersection at NODE_W
-    if (node_based_graph.GetEdgeData(via_edge).distance > COMBINE_DISTANCE_CUTOFF)
+    if (via_edge_length > COMBINE_DISTANCE_CUTOFF)
         return false;
 
     // Node -> Via_Edge -> Intersection[0 == UTURN] -> reverse_of(via_edge) -> Intersection at node
@@ -50,8 +56,10 @@ bool findPreviousIntersection(const NodeID node_v,
     // previous intersection.
     const auto straightmost_at_v_in_reverse =
         findClosestTurn(node_v_reverse_intersection, STRAIGHT_ANGLE);
-    if (angularDeviation(straightmost_at_v_in_reverse->turn.angle, STRAIGHT_ANGLE) >
-        FUZZY_ANGLE_DIFFERENCE)
+
+    // TODO evaluate if narrow turn is the right criterion here... Might be that other angles are
+    // valid
+    if (angularDeviation(straightmost_at_v_in_reverse->turn.angle, STRAIGHT_ANGLE) > GROUP_ANGLE)
         return false;
 
     const auto node_u = node_based_graph.GetTarget(straightmost_at_v_in_reverse->turn.eid);
@@ -66,12 +74,25 @@ bool findPreviousIntersection(const NodeID node_v,
     // if the edge is not traversable, we obviously don't have a previous intersection or couldn't
     // find it.
     if (node_based_graph.GetEdgeData(result_via_edge).reversed)
+    {
+        result_via_edge = SPECIAL_EDGEID;
+        result_node = SPECIAL_NODEID;
         return false;
+    }
 
     result_intersection = turn_analysis.getIntersection(node_u, result_via_edge);
-    const auto check_via_edge = findClosestTurn(result_intersection, STRAIGHT_ANGLE)->turn.eid;
-    if (check_via_edge != via_edge)
+    const auto check_via_edge =
+        result_intersection.end() !=
+        std::find_if(result_intersection.begin(),
+                     result_intersection.end(),
+                     [via_edge](const ConnectedRoad &road) { return road.turn.eid == via_edge; });
+
+    if (!check_via_edge)
+    {
+        result_via_edge = SPECIAL_EDGEID;
+        result_node = SPECIAL_NODEID;
         return false;
+    }
 
     result_intersection =
         turn_analysis.assignTurnTypes(node_u, result_via_edge, std::move(result_intersection));

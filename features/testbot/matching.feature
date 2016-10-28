@@ -4,15 +4,18 @@ Feature: Basic Map Matching
     Background:
         Given the profile "testbot"
         Given a grid size of 10 meters
+        Given the extract extra arguments "--generate-edge-lookup"
 
     Scenario: Testbot - Map matching with outlier that has no candidate
         Given a grid size of 100 meters
         Given the node map
-            | a | b | c | d |
-            |   |   |   |   |
-            |   |   |   |   |
-            |   |   |   |   |
-            |   |   | 1 |   |
+            """
+            a b c d
+
+
+
+                1
+            """
 
         And the ways
             | nodes | oneway |
@@ -24,8 +27,10 @@ Feature: Basic Map Matching
 
     Scenario: Testbot - Map matching with trace splitting
         Given the node map
-            | a | b | c | d |
-            |   |   | e |   |
+            """
+            a b c d
+                e
+            """
 
         And the ways
             | nodes | oneway |
@@ -38,8 +43,10 @@ Feature: Basic Map Matching
     Scenario: Testbot - Map matching with core factor
         Given the contract extra arguments "--core 0.8"
         Given the node map
-            | a | b | c | d |
-            |   |   | e |   |
+            """
+            a b c d
+                e
+            """
 
         And the ways
             | nodes | oneway |
@@ -51,12 +58,14 @@ Feature: Basic Map Matching
 
     Scenario: Testbot - Map matching with small distortion
         Given the node map
-            | a | b | c | d | e |
-            |   | f |   |   |   |
-            |   |   |   |   |   |
-            |   |   |   |   |   |
-            |   |   |   |   |   |
-            |   | h |   |   | k |
+            """
+            a b c d e
+              f
+
+
+
+              h     k
+            """
 
         # The second way does not need to be a oneway
         # but the grid spacing triggers the uturn
@@ -73,8 +82,10 @@ Feature: Basic Map Matching
     Scenario: Testbot - Map matching with oneways
         Given a grid size of 10 meters
         Given the node map
-            | a | b | c | d |
-            | e | f | g | h |
+            """
+            a b c d
+            e f g h
+            """
 
         And the ways
             | nodes | oneway |
@@ -88,8 +99,10 @@ Feature: Basic Map Matching
     Scenario: Testbot - Matching with oneway streets
         Given a grid size of 10 meters
         Given the node map
-            | a | b | c | d |
-            | e | f | g | h |
+            """
+            a b c d
+            e f g h
+            """
 
         And the ways
             | nodes | oneway |
@@ -110,18 +123,27 @@ Feature: Basic Map Matching
             | annotations | true |
 
         Given the node map
-            | a | b | c | d | e |   | g | h |
-            |   |   | i |   |   |   |   |   |
+            """
+            a b c d e   g h
+                i
+            """
 
         And the ways
             | nodes    | oneway |
             | abcdegh  | no     |
             | ci       | no     |
 
+        And the speed file
+        """
+        1,2,36
+        """
+
+        And the contract extra arguments "--segment-speed-file {speeds_file}"
+
         When I match I should get
-            | trace | matchings | annotation                                                                     |
-            | abeh  | abcedgh   | 1:9.897633,0:0,1:10.008842,1:10.008842,1:10.008842,0:0,2:20.017685,1:10.008842 |
-            | abci  | abc,ci    | 1:9.897633,0:0,1:10.008842,0:0.111209,1:10.010367                              |
+            | trace | matchings | annotation                                                                                     |
+            | abeh  | abcedgh   | 1:9.897633:1,0:0:0,1:10.008842:0,1:10.008842:0,1:10.008842:0,0:0:0,2:20.017685:0,1:10.008842:0 |
+            | abci  | abc,ci    | 1:9.897633:1,0:0:0,1:10.008842:0,0:0.111209:0,1:10.010367:0                                    |
 
         # The following is the same as the above, but separated for readability (line length)
         When I match I should get
@@ -135,8 +157,10 @@ Feature: Basic Map Matching
             | geometries | polyline |
 
         Given the node map
-            | a | b | c |
-            |   | d |   |
+            """
+            a b c
+              d
+            """
 
         And the ways
             | nodes | oneway |

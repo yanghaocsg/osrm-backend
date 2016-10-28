@@ -30,17 +30,17 @@ http://{server}/{service}/{version}/{profile}/{coordinates}[.{format}]?option=va
   
     | Service     |           Description                                     |
     |-------------|-----------------------------------------------------------|
-    | [`route`](#service-route)     | shortest path between given coordinates                   |
+    | [`route`](#service-route)     | fastest path between given coordinates                   |
     | [`nearest`](#service-nearest)   | returns the nearest street segment for a given coordinate |
     | [`table`](#service-table)     | computes distance tables for given coordinates            |
     | [`match`](#service-match)     | matches given coordinates to the road network             |
-    | [`trip`](#service-trip)      | Compute the shortest round trip between given coordinates |
+    | [`trip`](#service-trip)      | Compute the fastest round trip between given coordinates |
     | [`tile`](#service-tile)      | Return vector tiles containing debugging info             |
   
 - `version`: Version of the protocol implemented by the service.
-- `profile`: Mode of transportation, is determined by the profile that is used to prepare the data
+- `profile`: Mode of transportation, is determined statically by the Lua profile that is used to prepare the data using `osrm-extract`.
 - `coordinates`: String of format `{longitude},{latitude};{longitude},{latitude}[;{longitude},{latitude} ...]` or `polyline({polyline})`.
-- `format`: Only `json` is supportest at the moment. This parameter is optional and defaults to `json`.
+- `format`: Only `json` is supported at the moment. This parameter is optional and defaults to `json`.
 
 Passing any `option=value` is optional. `polyline` follows Google's polyline format with precision 5 and can be generated using [this package](https://www.npmjs.com/package/polyline).
 To pass parameters to each location some options support an array like encoding:
@@ -107,6 +107,8 @@ Where `code` is on one of the strings below or service dependent:
 | `InvalidService`  | Service name is invalid.                                                         |
 | `InvalidVersion`  | Version is not found.                                                            |
 | `InvalidOptions`  | Options are invalid.                                                             |
+| `InvalidQuery`    | The query string is synctactically malformed.                                    |
+| `InvalidValue`    | The successfully parsed query parameters are invalid.                            |
 | `NoSegment`       | One of the supplied input coordinates could not snap to street segment.          |
 | `TooBig`          | The request size violates one of the service specific request size restrictions. |
 
@@ -181,6 +183,14 @@ In case of error the following `code`s are supported in addition to the general 
 
 All other fields might be undefined.
 
+### Example
+
+Query on Berlin with three coordinates and no overview geometry returned:
+
+```
+http://router.project-osrm.org/route/v1/driving/13.388860,52.517037;13.397634,52.529407;13.428555,52.523219?overview=false
+```
+
 ## Service `table`
 ### Request
 ```
@@ -241,7 +251,7 @@ http://router.project-osrm.org/table/v1/driving/13.388860,52.517037;13.397634,52
 
 Returns a asymmetric 3x2 matrix with from the polyline encoded locations `qikdcB}~dpXkkHz`:
 ```
-http://router.project-osrm.org/table/v1/driving/qikdcB}~dpXkkHz?sources=0;1;3&destinations=2;4
+http://router.project-osrm.org/table/v1/driving/polyline(egs_Iq_aqAppHzbHulFzeMe`EuvKpnCglA)?sources=0;1;3&destinations=2;4
 ```
 
 ## Service `match`
@@ -265,7 +275,7 @@ In addition to the [general options](#general-options) the following options are
 |geometries  |`polyline` (default), `geojson`                 |Returned route geometry format (influences overview and per step)                        |
 |annotations |`true`, `false` (default)                       |Returns additional metadata for each coordinate along the route geometry.                |
 |overview    |`simplified` (default), `full`, `false`         |Add overview geometry either full, simplified according to highest zoom level it could be display on, or not at all.|
-|timestamps  |`{timestamp};{timestamp}[;{timestamp} ...]`     |Timestamp of the input location.                                                          |
+|timestamps  |`{timestamp};{timestamp}[;{timestamp} ...]`     |Timestamp of the input location. Timestamps need to be monotonically increasing.          |
 |radiuses    |`{radius};{radius}[;{radius} ...]`              |Standard deviation of GPS precision used for map matching. If applicable use GPS accuracy.|
 
 |Parameter   |Values                        |
@@ -294,7 +304,7 @@ All other fields might be undefined.
 ## Service `trip`
 
 The trip plugin solves the Traveling Salesman Problem using a greedy heuristic (farthest-insertion algorithm).
-The returned path does not have to be the shortest path, as TSP is NP-hard it is only an approximation.
+The returned path does not have to be the fastest path, as TSP is NP-hard it is only an approximation.
 Note that if the input coordinates can not be joined by a single trip (e.g. the coordinates are on several disconnected islands)
 multiple trips for each connected component are returned.
 
@@ -399,8 +409,8 @@ Represents a route between two waypoints.
 
    | annotations  |                                                                       |
    |--------------|-----------------------------------------------------------------------|
-   | true         | returns distance and durations of each coordinate along the route     |
-   | false        | will not exist                                                        |
+   | true         | An `Annotation` object containing node ids, durations and distances   |
+   | false        | `undefined`                                                           |
 
 #### Example
 
@@ -414,10 +424,34 @@ With `steps=false` and `annotations=true`:
   "annotation": {
     "distance": [5,5,10,5,5],
     "duration": [15,15,40,15,15],
+    "datasources": [1,0,0,0,1],
     "nodes": [49772551,49772552,49786799,49786800,49786801,49786802]
   }
 }
 ```
+
+### Annotation
+
+Annotation of the whole route leg with fine-grained information about each segment or node id.
+
+#### Properties
+
+- `distance`: The distance, in metres, between each pair of coordinates
+- `duration`: The duration between each pair of coordinates, in seconds
+- `datasources`: The index of the datasource for the speed between each pair of coordinates. `0` is the default profile, other values are supplied via `--segment-speed-file` to `osrm-contract`
+- `nodes`: The OSM node ID for each coordinate along the route, excluding the first/last user-supplied coordinates
+
+#### Example
+
+```json
+{
+  "distance": [5,5,10,5,5],
+  "duration": [15,15,40,15,15],
+  "datasources": [1,0,0,0,1],
+  "nodes": [49772551,49772552,49786799,49786800,49786801,49786802]
+}
+```
+
 
 ### RouteStep
 
@@ -437,6 +471,7 @@ step.
   | geojson    | [GeoJSON `LineString`](http://geojson.org/geojson-spec.html#linestring) or [GeoJSON `Point`](http://geojson.org/geojson-spec.html#point) if it is only one coordinate (not wrapped by a GeoJSON feature)|
   
 - `name`: The name of the way along which travel proceeds.
+- `ref`: A reference number or code for the way. Optionally included, if ref data is available for the given way.
 - `pronunciation`: The pronunciation hint of the way name. Will be `undefined` if there is no pronunciation hit.
 - `destinations`: The destinations of the way. Will be `undefined` if there are no destinations.
 - `mode`: A string signifying the mode of transportation.
@@ -505,7 +540,7 @@ step.
   | `use lane`       | going straight on a specific lane                            |
   | `continue`       | Turn in direction of `modifier` to stay on the same road     |
   | `roundabout`     | traverse roundabout, has additional field `exit` with NR if the roundabout is left. `the modifier specifies the direction of entering the roundabout` |
-  | `rotary`         | a larger version of a roundabout, can offer `rotary_name` in addition to the `exit` parameter.  |
+  | `rotary`         | a larger version of a roundabout, can offer `rotary_name/rotary_pronunciation` in addition to the `exit` parameter.  |
   | `roundabout turn`| Describes a turn at a small roundabout that should be treated as normal turn. The `modifier` indicates the turn direciton. Example instruction: `At the roundabout turn left`. |
   | `notification`   | not an actual turn but a change in the driving conditions. For example the travel mode.  If the road takes a turn itself, the `modifier` describes the direction |
 
@@ -538,7 +573,7 @@ step.
   
   | `type`                 | Description                                                                                                               |
   |------------------------|---------------------------------------------------------------------------------------------------------------------------|
-  | `roundabout`           | Number of the roundabout exit to take. If exit is `undefined` the destination is on the roundabout.                       |
+  | `roundabout`/`rotary`         | Number of the roundabout exit to take. If exit is `undefined` the destination is on the roundabout.                       |
   | else                   | Indicates the number of intersections passed until the turn. Example instruction: `at the fourth intersection, turn left` |
 
 
@@ -591,7 +626,7 @@ location of the StepManeuver. Further intersections are listed for every cross-w
   in the direction of driving, the bearing has to be rotated by a value of 180. The value is not supplied for `depart` maneuvers.
 - `out`: index into the bearings/entry array. Used to extract the bearing just after the turn. Namely, The clockwise angle from true north to the
   direction of travel immediately after the maneuver/passing the intersection. The value is not supplied for `arrive` maneuvers.
-- `lanes`: Array of `Lane` objects that denote the available turn lanes at the turn location
+- `lanes`: Array of `Lane` objects that denote the available turn lanes at the intersection. If no lane information is available for an intersection, the `lanes` property will not be present.
 
 #### Example
 ```

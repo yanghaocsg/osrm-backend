@@ -7,9 +7,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Same Road Class
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   |   |
-            |   |   |   |   | d |
+            """
+                    c
+            a   b
+                    d
+            """
 
         And the ways
             | nodes  | highway |
@@ -22,11 +24,48 @@ Feature: Fork Instructions
             | a,c       | ab,bc,bc | depart,fork slight left,arrive  |
             | a,d       | ab,bd,bd | depart,fork slight right,arrive |
 
+    Scenario: Don't Fork On Single Road
+        Given the node map
+            """
+                    c
+            a   b
+                    d
+            """
+
+        And the ways
+            | nodes  | highway | oneway |
+            | ab     | primary | no     |
+            | cb     | primary | yes    |
+            | bd     | primary | yes    |
+
+       When I route I should get
+            | waypoints | route    | turns                               |
+            | a,d       | ab,bd,bd | depart,new name slight right,arrive |
+
+    Scenario: Don't Fork On Single Road
+        Given the node map
+            """
+                        c
+            a   b   d
+            """
+
+        And the ways
+            | nodes  | highway | oneway | name |
+            | ab     | primary | no     | road |
+            | cb     | primary | yes    | road |
+            | bd     | primary | yes    | turn |
+
+       When I route I should get
+            | waypoints | route          | turns                           |
+            | a,d       | road,turn,turn | depart,new name straight,arrive |
+
     Scenario: Do not fork on link type
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   |   |
-            |   |   |   |   | d |
+            """
+                    c
+            a   b
+                    d
+            """
 
         And the ways
             | nodes  | highway      |
@@ -41,9 +80,11 @@ Feature: Fork Instructions
 
     Scenario: Fork in presence of other roads
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   |   |
-            |   | e |   |   | d |
+            """
+                    c
+            a   b
+              e     d
+            """
 
         And the ways
             | nodes  | highway |
@@ -59,10 +100,12 @@ Feature: Fork Instructions
 
     Scenario: Fork Turning Slight Left
         Given the node map
-            |   |   |   |   |   | c |
-            |   |   |   |   |   |   |
-            | a |   | b |   |   |   |
-            |   |   |   |   | d |   |
+            """
+                      c
+
+            a   b
+                    d
+            """
 
         And the ways
             | nodes  | highway |
@@ -77,10 +120,12 @@ Feature: Fork Instructions
 
     Scenario: Fork Turning Slight Right
         Given the node map
-            |   |   |   |   | c |   |
-            | a |   | b |   |   |   |
-            |   |   |   |   |   |   |
-            |   |   |   |   |   | d |
+            """
+                    c
+            a   b
+
+                      d
+            """
 
         And the ways
             | nodes  | highway |
@@ -95,9 +140,11 @@ Feature: Fork Instructions
 
     Scenario: Do not fork on service
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   |   |
-            |   |   |   |   | d |
+            """
+                    c
+            a   b
+                    d
+            """
 
         And the ways
             | nodes  | highway     |
@@ -111,9 +158,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Slight Right
         Given the node map
-            | a |   | b |   |   |   |
-            |   |   |   |   |   | c |
-            |   |   |   |   |   | d |
+            """
+            a   b
+                      c
+                      d
+            """
 
         And the ways
             | nodes  | highway |
@@ -128,9 +177,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Slight Left
         Given the node map
-            |   |   |   |   |   | c |
-            |   |   |   |   |   | d |
-            | a |   | b |   |   |   |
+            """
+                      c
+                      d
+            a   b
+            """
 
         And the ways
             | nodes  | highway |
@@ -145,9 +196,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Slight Right - Unnamed
         Given the node map
-            | a |   | b |   |   |   |
-            |   |   |   |   |   | c |
-            |   |   |   |   |   | d |
+            """
+            a   b
+                      c
+                      d
+            """
 
         And the ways
             | nodes  | highway | name |
@@ -162,9 +215,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Slight Left - Unnamed
         Given the node map
-            |   |   |   |   |   | c |
-            |   |   |   |   |   | d |
-            | a |   | b |   |   |   |
+            """
+                      c
+                      d
+            a   b
+            """
 
         And the ways
             | nodes  | highway | name |
@@ -179,9 +234,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Very Slightly Right - Unnamed
         Given the node map
-            | a |   | b |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   | c |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   | d |
+            """
+            a   b
+                                  c
+                                              d
+            """
 
         And the ways
             | nodes  | highway | name |
@@ -196,9 +253,11 @@ Feature: Fork Instructions
 
     Scenario: Fork Both Turning Very Slightly Right - Unnamed Ramps
         Given the node map
-            | a |   | b |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   | c |   |   |   |   |   |   |
-            |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   | d |
+            """
+            a   b
+                                  c
+                                              d
+            """
 
         And the ways
             | nodes  | highway       | name |
@@ -213,9 +272,11 @@ Feature: Fork Instructions
 
     Scenario: Non-Fork on complex intersection - left
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   |   |
-            |   | e |   |   | d |
+            """
+                    c
+            a   b
+              e     d
+            """
 
         And the ways
             | nodes  | highway   |
@@ -230,9 +291,11 @@ Feature: Fork Instructions
 
     Scenario: Non-Fork on complex intersection - right
         Given the node map
-            |   | e |   |   | c |
-            | a |   | b |   |   |
-            |   |   |   |   | d |
+            """
+              e     c
+            a   b
+                    d
+            """
 
         And the ways
             | nodes  | highway   |
@@ -247,9 +310,11 @@ Feature: Fork Instructions
 
     Scenario: Tripple fork
         Given the node map
-            |   |   |   |   |   |   |   |   | c |
-            | a |   | b |   | d |   |   |   |   |
-            |   |   |   |   |   |   |   |   | e |
+            """
+                            c
+            a   b   d
+                            e
+            """
 
         And the ways
             | nodes  | highway   |
@@ -266,9 +331,11 @@ Feature: Fork Instructions
 
     Scenario: Tripple fork -- middle obvious
         Given the node map
-            |   |   |   |   | c |
-            | a |   | b |   | d |
-            |   |   |   |   | e |
+            """
+                    c
+            a   b   d
+                    e
+            """
 
         And the ways
             | nodes  | highway   |
@@ -284,8 +351,10 @@ Feature: Fork Instructions
 
     Scenario: Don't Fork when leaving Road
         Given the node map
-            | a |   | b |   | c |
-            |   |   |   |   | d |
+            """
+            a   b   c
+                    d
+            """
 
         And the ways
             | nodes  | highway   |
@@ -299,8 +368,10 @@ Feature: Fork Instructions
 
      Scenario: Fork on motorway links - don't fork on through
         Given the node map
-            | i |   |   |   |   | a |
-            | j |   | c | b |   | x |
+            """
+            i         a
+            j   c b   x
+            """
 
         And the ways
             | nodes | name | highway       |
@@ -311,6 +382,6 @@ Feature: Fork Instructions
             | ab    | on   | motorway_link |
 
         When I route I should get
-            | waypoints | route           | turns                                             |
-            | a,j       | on,xbcj,xbcj    | depart,merge slight left,arrive                   |
-            | a,i       | on,xbcj,off,off | depart,merge slight left,turn slight right,arrive |
+            | waypoints | route      | turns                           |
+            | a,j       | on,xbcj    | depart,arrive                   |
+            | a,i       | on,off,off | depart,turn slight right,arrive |

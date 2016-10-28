@@ -116,7 +116,8 @@ LaneDataVector augmentMultiple(const std::size_t none_index,
             lane_data.push_back({tag_by_modifier[intersection[intersection_index]
                                                      .turn.instruction.direction_modifier],
                                  lane_data[none_index].from,
-                                 lane_data[none_index].to});
+                                 lane_data[none_index].to,
+                                 false});
         }
     }
     lane_data.erase(lane_data.begin() + none_index);
@@ -268,7 +269,8 @@ LaneDataVector handleNoneValueAtSimpleTurn(LaneDataVector lane_data,
         ((intersection[0].entry_allowed && lane_data.back().tag != TurnLaneType::uturn) ? 1 : 0);
 
     // TODO check for impossible turns to see whether the turn lane is at the correct place
-    const std::size_t none_index = std::distance(lane_data.begin(), findTag(TurnLaneType::none, lane_data));
+    const std::size_t none_index =
+        std::distance(lane_data.begin(), findTag(TurnLaneType::none, lane_data));
     BOOST_ASSERT(none_index != lane_data.size());
     // we have to create multiple turns
     if (connection_count > lane_data.size())
@@ -282,9 +284,16 @@ LaneDataVector handleNoneValueAtSimpleTurn(LaneDataVector lane_data,
         // a pgerequisite is simple turns. Larger differences should not end up here
         // an additional line at the side is only reasonable if it is targeting public
         // service vehicles. Otherwise, we should not have it
-        BOOST_ASSERT(connection_count + 1 == lane_data.size());
-
-        lane_data = mergeNoneTag(none_index, std::move(lane_data));
+        if (connection_count + 1 == lane_data.size())
+        {
+            lane_data = mergeNoneTag(none_index, std::move(lane_data));
+        }
+        else
+        {
+            // This represents a currently unhandled case. It should not even get here, but to be
+            // sure we return nevertheless.
+            return lane_data;
+        }
     }
     // we have to rename and possibly augment existing ones. The pure count remains the
     // same.
@@ -292,6 +301,7 @@ LaneDataVector handleNoneValueAtSimpleTurn(LaneDataVector lane_data,
     {
         lane_data = handleRenamingSituations(none_index, std::move(lane_data), intersection);
     }
+
     // finally make sure we are still sorted
     std::sort(lane_data.begin(), lane_data.end());
     return lane_data;
