@@ -415,6 +415,9 @@ else()
   set(USED_LUA_LIBRARIES ${LUA_LIBRARY})
   add_dependency_includes(${LUA_INCLUDE_DIR})
 
+  find_package(V8 REQUIRED)
+  add_dependency_includes(${V8_INCLUDE_DIR})
+
   find_package(EXPAT REQUIRED)
   add_dependency_includes(${EXPAT_INCLUDE_DIRS})
 
@@ -509,6 +512,7 @@ set(EXTRACTOR_LIBRARIES
     ${EXPAT_LIBRARIES}
     ${LUABIND_LIBRARY}
     ${USED_LUA_LIBRARIES}
+    ${V8_LIBRARIES}
     ${OSMIUM_LIBRARIES}
     ${STXXL_LIBRARY}
     ${TBB_LIBRARIES}
