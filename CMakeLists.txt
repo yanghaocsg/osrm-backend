@@ -312,6 +312,7 @@ endif()
 
 if(UNIX AND NOT APPLE)
   set(MAYBE_RT_LIBRARY -lrt)
+  set(MAYBE_DL_LIBRARY -ldl)
 endif()
 
 # Disallow deprecated protozero APIs
@@ -519,6 +520,7 @@ set(EXTRACTOR_LIBRARIES
     ${LUABIND_LIBRARY}
     ${USED_LUA_LIBRARIES}
     ${V8_LIBRARIES}
+    ${MAYBE_DL_LIBRARY}
     ${OSMIUM_LIBRARIES}
     ${STXXL_LIBRARY}
     ${TBB_LIBRARIES}
