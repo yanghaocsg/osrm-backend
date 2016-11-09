@@ -92,7 +92,7 @@ add_custom_target(FingerPrintConfigure ALL ${CMAKE_COMMAND}
   COMMENT "Configuring revision fingerprint"
   VERBATIM)
 
-set(BOOST_COMPONENTS date_time chrono filesystem iostreams program_options regex system thread unit_test_framework)
+set(BOOST_COMPONENTS date_time filesystem iostreams program_options regex system thread unit_test_framework)
 
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/include/util/version.hpp.in
