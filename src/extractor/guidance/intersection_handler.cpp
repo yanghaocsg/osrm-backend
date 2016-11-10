@@ -404,10 +404,14 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     // continue instruction because they share a name with the approaching way
     const std::pair<std::int64_t, std::int64_t> num_continue_names = [&]() {
         std::int64_t count = 0, count_valid = 0;
-        for (std::size_t i = 0, size = intersection.size(); i < size; ++i)
+        for (std::size_t i = 1, size = intersection.size(); i < size; ++i)
         {
-            const auto &way = node_based_graph.GetEdgeData(intersection[i].eid);
-            if (way.name_id == in_way.name_id) {
+            const auto &out_way = node_based_graph.GetEdgeData(intersection[i].eid);
+            const auto same_name = !util::guidance::requiresNameAnnounced(
+                in_way.name_id, out_way.name_id, name_table, street_name_suffix_table);
+
+            if (same_name)
+            {
                 ++count;
                 if (intersection[i].entry_allowed)
                     ++count_valid;
@@ -432,7 +436,8 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
         out.same_or_higher_priority =
             out_node.road_classification.GetPriority() <= in_way.road_classification.GetPriority();
         out.same_classification = out_node.road_classification == in_way.road_classification;
-        out.same_name_id = out_node.name_id == in_way.name_id;
+        out.same_name_id = !util::guidance::requiresNameAnnounced(
+                in_way.name_id, out_node.name_id, name_table, street_name_suffix_table);
 
         out_ways.push_back(out);
     }
@@ -445,8 +450,10 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     // sort out ways by what they share with the in way
     // entry allowed, lowest deviation to greatest deviation, name, classification and priority
     const auto sort_by = [](const out_way &lhs, const out_way &rhs) {
-        auto left_tie = std::tie(rhs.deviation_from_straight, lhs.same_classification, lhs.same_or_higher_priority);
-        auto right_tie = std::tie(lhs.deviation_from_straight, rhs.same_classification, rhs.same_or_higher_priority);
+        auto left_tie = std::tie(
+            rhs.deviation_from_straight, lhs.same_classification, lhs.same_or_higher_priority);
+        auto right_tie = std::tie(
+            lhs.deviation_from_straight, rhs.same_classification, rhs.same_or_higher_priority);
         return left_tie > right_tie;
     };
     std::stable_sort(begin(out_ways), end(out_ways), sort_by);
@@ -501,9 +508,7 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     {
         // continue roads exist
         // best_continue is the first sorted way that shares the same name as the in way
-        const auto sameName = [&](const out_way &lhs) {
-            return lhs.same_name_id == true;
-        };
+        const auto sameName = [&](const out_way &lhs) { return lhs.same_name_id == true; };
         const auto End = end(out_ways);
         const auto best_continue_it = std::find_if(begin(out_ways), End, sameName);
         if (best_continue_it != End)
