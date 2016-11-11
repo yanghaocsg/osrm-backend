@@ -98,5 +98,31 @@ Feature: Merge Segregated Roads
             | bfc   | aug  | yes    |
 
         When I route I should get
-            | waypoints | route     | intersections                                                                       |
-            | a,e       | pass,pass | true:90, false:60 true:90 true:180 false:270, true:90 false:180 false:270; true:270 |
+            | waypoints | route     | intersections                                                                    |
+            | a,e       | pass,pass | true:90,false:60 true:90 true:180 false:270,true:90 false:180 false:270;true:270 |
+
+    @negative
+    Scenario: Tripple Merge should not be possible
+        Given the node map
+            """
+                          . f - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - g
+                        .
+            a - - - - b - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - e
+                        '
+                          ' c - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - d
+            """
+
+        And the ways
+            | nodes | name  | oneway |
+            | ab    | in    | no     |
+            | gfb   | merge | yes    |
+            | be    | merge | yes    |
+            | dcb   | merge | yes    |
+
+        When I route I should get
+            | waypoints | route          | intersections                                         |
+            | a,e       | in,merge,merge | true:90;false:86 true:90 false:94 false:270;true:270  |
+
+    @negative
+    Scenario: Don't accept turn-restrictions
+        Given the node map
