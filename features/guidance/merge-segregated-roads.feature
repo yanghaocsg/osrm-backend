@@ -120,9 +120,31 @@ Feature: Merge Segregated Roads
             | dcb   | merge | yes    |
 
         When I route I should get
-            | waypoints | route          | intersections                                         |
-            | a,e       | in,merge,merge | true:90;false:86 true:90 false:94 false:270;true:270  |
+            | waypoints | route          | intersections                                          |
+            | a,e       | in,merge,merge | true:90;false:75 true:90 false:120 false:270;true:270  |
 
     @negative
     Scenario: Don't accept turn-restrictions
         Given the node map
+            """
+                          c - - - - - - - - - - - - - - - - - - - - - - - - - - - - - d
+                       /                                                                  \
+            a - - - b                                                                        g - - h
+                       \                                                                  /
+                          e - - - - - - - - - - - - - - - - - - - - - - - - - - - - - f
+            """
+
+        And the ways
+            | nodes  | name | oneway |
+            | ab     | road | yes    |
+            | befgh  | road | yes    |
+            | bcdg   | road | yes    |
+
+        # This is an artificial scenario - not reasonable. It is only to test the merging on turn-restrictions
+        And the relations
+            | type        | way:from | way:to | node:via | restriction  |
+            | restriction | ab       | bcdg   | b        | no_left_turn |
+
+        When I route I should get
+            | waypoints | route     | intersections                                                            |
+            | a,h       | road,road | true:90,false:75 true:120 false:270,true:90 false:240 false:285;true:270 |
