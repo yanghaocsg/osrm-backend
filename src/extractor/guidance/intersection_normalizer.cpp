@@ -2,6 +2,10 @@
 #include "extractor/guidance/toolkit.hpp"
 #include "util/guidance/toolkit.hpp"
 
+#include "util/geojson_debug_logger.hpp"
+#include "extractor/geojson_debug_policies.hpp"
+#include "util/geojson_debug_policies.hpp"
+
 namespace osrm
 {
 namespace extractor
@@ -137,6 +141,8 @@ Intersection IntersectionNormalizer::MergeSegregatedRoads(const NodeID intersect
         return false;
     }();
 
+    bool merged = false;
+    const auto intersection_copy = intersection;
     // check for merges including the basic u-turn
     // these result in an adjustment of all other angles. This is due to how these angles are
     // perceived. Considering the following example:
@@ -183,6 +189,7 @@ Intersection IntersectionNormalizer::MergeSegregatedRoads(const NodeID intersect
         intersection[0] = merge(intersection.front(), intersection.back());
         intersection[0].angle = 0;
         intersection.pop_back();
+        merged = true;
     }
     else if (CanMerge(intersection_node, intersection, 0, 1))
     {
@@ -194,6 +201,7 @@ Intersection IntersectionNormalizer::MergeSegregatedRoads(const NodeID intersect
         intersection[0] = merge(intersection[0], intersection[1]);
         intersection[0].angle = 0;
         intersection.erase(intersection.begin() + 1);
+        merged = true;
     }
 
     if (merged_first && is_connected_to_roundabout)
@@ -221,7 +229,13 @@ Intersection IntersectionNormalizer::MergeSegregatedRoads(const NodeID intersect
                 merge(intersection[getRight(index)], intersection[index]);
             intersection.erase(intersection.begin() + index);
             --index;
+            merged = true;
         }
+    }
+
+    if (merged)
+    {
+        util::ScopedGeojsonLoggerGuard<extractor::IntersectionPrinter>::Write(intersection_node, intersection_copy);
     }
 
     std::sort(std::begin(intersection),

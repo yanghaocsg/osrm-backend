@@ -163,7 +163,7 @@ void IntersectionFinderAccumulator::update(const NodeID from_node,
     nid = from_node;
     via_edge_id = via_edge;
 
-    intersection = intersection_generator.GetConnectedRoads(from_node, via_edge);
+    intersection = intersection_generator.GetConnectedRoads(from_node, via_edge, true);
 }
 
 } // namespace guidance
