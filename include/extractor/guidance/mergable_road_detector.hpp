@@ -63,8 +63,8 @@ class MergableRoadDetector
      * When it comes to merging roads, we need to find out if two ways actually represent the
      * same road. This check tries to identify roads which are the same road in opposite directions
      */
-    bool HaveCompatibleRoadData(const util::NodeBasedEdgeData &lhs_edge_data,
-                                const util::NodeBasedEdgeData &rhs_edge_data) const;
+    bool RoadDataIsCompatible(const util::NodeBasedEdgeData &lhs_edge_data,
+                              const util::NodeBasedEdgeData &rhs_edge_data) const;
 
     /*
      * Detetor to check if we are looking at roads splitting up just prior to entering an
@@ -124,7 +124,7 @@ class MergableRoadDetector
      *
      * The detector wants to prevent merges that are connected to `b-e`
      */
-    bool IsLinkRoad( const NodeID intersection_node, const ConnectedRoad &road ) const;
+    bool IsLinkRoad(const NodeID intersection_node, const ConnectedRoad &road) const;
 
     const util::NodeBasedDynamicGraph &node_based_graph;
     const std::vector<QueryNode> &node_coordinates;

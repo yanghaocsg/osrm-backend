@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -99,6 +100,26 @@ struct Intersection final : public std::vector<ConnectedRoad>
 
 Intersection::const_iterator findClosestTurn(const Intersection &intersection, const double angle);
 Intersection::iterator findClosestTurn(Intersection &intersection, const double angle);
+
+// the FilterType needs to be a function, returning false for elements to keep and true for elements
+// to remove from the considerations.
+template <class UnaryPredicate>
+Intersection::const_iterator
+findClosestTurn(const Intersection &intersection, const double angle, const UnaryPredicate filter)
+{
+    const auto candidate = std::min_element(
+        intersection.begin(),
+        intersection.end(),
+        [angle, &filter](const ConnectedRoad &lhs, const ConnectedRoad &rhs) {
+            const auto filtered_lhs = filter(lhs), filtered_rhs = filter(rhs);
+            const auto deviation_lhs = util::guidance::angularDeviation(lhs.angle, angle),
+                       deviation_rhs = util::guidance::angularDeviation(rhs.angle, angle);
+            return std::tie(filtered_lhs, deviation_lhs) < std::tie(filtered_rhs, deviation_rhs);
+        });
+
+    // make sure only to return valid elements
+    return filter(*candidate) ? intersection.cend() : candidate;
+}
 
 } // namespace guidance
 } // namespace extractor

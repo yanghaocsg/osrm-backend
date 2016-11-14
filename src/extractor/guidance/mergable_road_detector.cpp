@@ -50,7 +50,7 @@ bool MergableRoadDetector::CanMergeRoad(const NodeID intersection_node,
         return false;
 
     // and they need to describe the same road
-    if (!HaveCompatibleRoadData(lhs_edge_data, rhs_edge_data))
+    if (!RoadDataIsCompatible(lhs_edge_data, rhs_edge_data))
         return false;
 
     // don't use any circular links, since they mess up detection we jump out early.
@@ -80,9 +80,8 @@ bool MergableRoadDetector::CanMergeRoad(const NodeID intersection_node,
     // finally check if two roads describe the same way
 }
 
-bool MergableRoadDetector::HaveCompatibleRoadData(
-    const util::NodeBasedEdgeData &lhs_edge_data,
-    const util::NodeBasedEdgeData &rhs_edge_data) const
+bool MergableRoadDetector::RoadDataIsCompatible(const util::NodeBasedEdgeData &lhs_edge_data,
+                                                const util::NodeBasedEdgeData &rhs_edge_data) const
 {
     // to describe the same road, but in opposite directions (which is what we require for a
     // merge), the roads have to feature one reversed and one non-reversed edge
@@ -300,7 +299,57 @@ bool MergableRoadDetector::ConnectAgain(const NodeID intersection_node,
 bool MergableRoadDetector::IsLinkRoad(const NodeID intersection_node,
                                       const ConnectedRoad &road) const
 {
-    return false;
+    // selection data to the right and left
+    IntersectionFinderAccumulator accumulator(2, intersection_generator);
+
+    // Standard following the straightmost road
+    // Since both items have the same id, we can `select` based on any setup
+    SelectStraightmostRoadByNameAndOnlyChoice selector(
+        node_based_graph.GetEdgeData(road.eid).name_id, false);
+
+    NodeBasedGraphWalker graph_walker(node_based_graph, intersection_generator);
+    graph_walker.TraverseRoad(intersection_node, road.eid, accumulator, selector);
+
+    const auto &next_intersection_along_road = accumulator.intersection;
+    const auto extract_name = [this](const ConnectedRoad &road) {
+        return node_based_graph.GetTarget(road.eid);
+    };
+
+    const auto requested_name = extract_name(road);
+    const auto next_road_along_path =
+        findClosestTurn(accumulator.intersection,
+                        STRAIGHT_ANGLE,
+                        [requested_name, extract_name](const ConnectedRoad &compare_road) {
+                            return requested_name != extract_name(compare_road);
+                        });
+
+    // we need to have a continuing road to successfully detect a link road
+    if (next_road_along_path == accumulator.intersection.end())
+        return false;
+
+    const auto deviation = angularDeviation(STRAIGHT_ANGLE, next_road_along_path->angle);
+    const auto opposite_of_next_road_along_path = next_intersection_along_road.findClosestTurn(
+        restrictAngleToValidRange(next_road_along_path->angle + 180));
+
+    std::cout << "Check: " << node_based_graph.GetTarget(opposite_of_next_road_along_path->eid)
+              << " == " << accumulator.nid
+              << " And: " << angularDeviation(opposite_of_next_road_along_path->angle,
+                                              next_road_along_path->angle)
+              << " And: "
+              << RoadDataIsCompatible(
+                     node_based_graph.GetEdgeData(next_road_along_path->eid),
+                     node_based_graph.GetEdgeData(opposite_of_next_road_along_path->eid))
+              << std::endl;
+    // we cannot be looking at the same road we came from
+    if (node_based_graph.GetTarget(opposite_of_next_road_along_path->eid) == accumulator.nid)
+        return false;
+
+    // near straight road that continues
+    return angularDeviation(opposite_of_next_road_along_path->angle, next_road_along_path->angle) >=
+               160 &&
+           RoadDataIsCompatible(
+               node_based_graph.GetEdgeData(next_road_along_path->eid),
+               node_based_graph.GetEdgeData(opposite_of_next_road_along_path->eid));
 }
 
 } // namespace guidance

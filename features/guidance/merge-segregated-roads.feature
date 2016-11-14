@@ -22,9 +22,9 @@ Feature: Merge Segregated Roads
             | be    | road | yes    |
 
         When I route I should get
-            | waypoints | route     | intersections                              |
-            | a,c       | road,road | true:90,true:60 true:90 false:270;true:270 |
-            | d,f       | road,road | true:90,true:60 true:90 false:240;true:270 |
+            | waypoints | route     | intersections                                |
+            | a,c       | road,road | true:90,true:75 true:90 false:270;true:270   |
+            | d,f       | road,road | true:270,false:90 false:255 true:270;true:90 |
 
     #http://www.openstreetmap.org/#map=18/52.48337/13.36184
     @negative
