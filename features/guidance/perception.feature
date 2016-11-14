@@ -319,26 +319,3 @@ Feature: Simple Turns
             | a,d       | horiz,horiz      | true:90,false:0 true:60 true:90 true:180 false:270,false:0 true:90 false:180 false:270 true:300;true:270   |
             | j,h       | vert,horiz,horiz | true:0;true:0 true:90 false:180 false:270 true:300,false:0 false:90 false:120 false:180 true:270;true:90   |
             | j,l       | vert,vert        | true:0,true:0 true:90 false:180 false:270 true:300,true:0 false:90 false:180 true:240 false:270;true:180   |
-
-
-    Scenario: Actual Turn into segregated ways
-        Given the node map
-            """
-            a - - - b -<-<-<-<-<-<-<-<-<-<-<c -
-                    |                           \
-                    |                           |
-                      d                         |
-                        \                       |
-                          e>->->->->->->->->->->f - - - - - - g
-            """
-
-        And the ways
-            | nodes | name | oneway |
-            | ab    | road | no     |
-            | fcb   | road | yes    |
-            | bdef  | road | yes    |
-            | fg    | road | no     |
-
-        When I route I should get
-            | waypoints | route          | intersections                                                           |
-            | a,g       | road,road,road | true:90,false:90 true:165 false:270,true:90 false:270 true:345;true:270 |

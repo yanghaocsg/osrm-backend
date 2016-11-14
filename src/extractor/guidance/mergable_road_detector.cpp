@@ -312,7 +312,7 @@ bool MergableRoadDetector::IsLinkRoad(const NodeID intersection_node,
 
     const auto &next_intersection_along_road = accumulator.intersection;
     const auto extract_name = [this](const ConnectedRoad &road) {
-        return node_based_graph.GetTarget(road.eid);
+        return node_based_graph.GetEdgeData(road.eid).name_id;
     };
 
     const auto requested_name = extract_name(road);
@@ -327,19 +327,9 @@ bool MergableRoadDetector::IsLinkRoad(const NodeID intersection_node,
     if (next_road_along_path == accumulator.intersection.end())
         return false;
 
-    const auto deviation = angularDeviation(STRAIGHT_ANGLE, next_road_along_path->angle);
     const auto opposite_of_next_road_along_path = next_intersection_along_road.findClosestTurn(
         restrictAngleToValidRange(next_road_along_path->angle + 180));
 
-    std::cout << "Check: " << node_based_graph.GetTarget(opposite_of_next_road_along_path->eid)
-              << " == " << accumulator.nid
-              << " And: " << angularDeviation(opposite_of_next_road_along_path->angle,
-                                              next_road_along_path->angle)
-              << " And: "
-              << RoadDataIsCompatible(
-                     node_based_graph.GetEdgeData(next_road_along_path->eid),
-                     node_based_graph.GetEdgeData(opposite_of_next_road_along_path->eid))
-              << std::endl;
     // we cannot be looking at the same road we came from
     if (node_based_graph.GetTarget(opposite_of_next_road_along_path->eid) == accumulator.nid)
         return false;

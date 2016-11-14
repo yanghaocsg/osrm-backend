@@ -99,7 +99,7 @@ Feature: Merge Segregated Roads
 
         When I route I should get
             | waypoints | route     | intersections                                                                    |
-            | a,e       | pass,pass | true:90,false:60 true:90 true:180 false:270,true:90 false:180 false:270;true:270 |
+            | a,e       | pass,pass | true:90,false:60 true:90 true:165 false:270,true:90 false:195 false:270;true:270 |
 
     @negative
     Scenario: Tripple Merge should not be possible
@@ -142,7 +142,7 @@ Feature: Merge Segregated Roads
 
         When I route I should get
             | waypoints | route          | intersections                                          |
-            | a,d       | in,merge,merge | true:90;false:75 true:90 false:120 false:270;true:270  |
+            | a,d       | in,merge,merge | true:90;false:75 false:90 true:120 false:270;true:270  |
 
     @negative
     Scenario: Don't accept turn-restrictions
@@ -169,3 +169,86 @@ Feature: Merge Segregated Roads
         When I route I should get
             | waypoints | route     | intersections                                                            |
             | a,h       | road,road | true:90,false:75 true:120 false:270,true:90 false:240 false:285;true:270 |
+
+    Scenario: Actual Turn into segregated ways
+        Given the node map
+            """
+            a - - - b - < - < - < - < - < - < - < - < - < - < - < c -
+                    |                                                 \
+                    |                                                 |
+                    |                                                 |
+                      d                                               |
+                       \                                              |
+                         \                                            |
+                          e > - > - > - > - > - > - > - > - > - > - > f - - - - - - g
+            """
+
+        And the ways
+            | nodes | name | oneway |
+            | ab    | road | no     |
+            | fcb   | road | yes    |
+            | bdef  | road | yes    |
+            | fg    | road | no     |
+
+        When I route I should get
+            | waypoints | route          | intersections                                                           |
+            | a,g       | road,road,road | true:90,false:90 true:165 false:270,true:90 false:270 true:345;true:270 |
+
+    Scenario: Collapse Turn Instruction, Issue #2725 - not trivially mergable at e
+    # https://www.mapillary.com/app/?lat=52.466483333333336&lng=13.431908333333332&z=17&focus=photo&pKey=LWXnKqoGqUNLnG0lofiO0Q
+    # http://www.openstreetmap.org/#map=19/52.46750/13.43171
+        Given the node map
+            """
+                f
+                |
+               .e.
+              /   \
+             /     \
+            g       d
+            |       |
+            |       |
+            |       |
+            |       |
+            |       |
+            |       |
+            |       |
+            |       |
+            h       c
+             \     /
+              \   /
+               \ /
+                b
+                |
+                a
+                |
+                |
+            r - x - s
+                |
+                |
+                y
+            """
+
+        And the ways
+            | nodes | name           | highway   | oneway |
+            | ab    | Hermannstr     | secondary |        |
+            | bc    | Hermannstr     | secondary | yes    |
+            | cd    | Hermannbruecke | secondary | yes    |
+            | de    | Hermannstr     | secondary | yes    |
+            | ef    | Hermannstr     | secondary |        |
+            | eg    | Hermannstr     | secondary | yes    |
+            | gh    | Hermannbruecke | secondary | yes    |
+            | hb    | Hermannstr     | secondary | yes    |
+            | xa    | Hermannstr     | secondary |        |
+            | yx    | Hermannstr     | secondary |        |
+            | rxs   | Silbersteinstr | tertiary  |        |
+
+        And the nodes
+            | node | highway         |
+            | x    | traffic_signals |
+
+        When I route I should get
+            | waypoints | turns         | route                 | intersections   |
+            | a,f       | depart,arrive | Hermannstr,Hermannstr | true:180;true:0 |
+            | f,a       | depart,arrive | Hermannstr,Hermannstr | true:180;true:0 |
+            | y,f       | depart,arrive | Hermannstr,Hermannstr | true:180;true:0 |
+            | f,y       | depart,arrive | Hermannstr,Hermannstr | true:180;true:0 |
