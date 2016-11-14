@@ -323,8 +323,8 @@ double findClosestDistance(const Coordinate coordinate,
                            const Coordinate segment_begin,
                            const Coordinate segment_end)
 {
-    return haversineDistance(
-        coordinate, projectPointOnSegment(segment_begin, segment_end, coordinate).second);
+    return haversineDistance(coordinate,
+                             projectPointOnSegment(segment_begin, segment_end, coordinate).second);
 }
 
 // find the closest distance between a coordinate and a set of coordinates
@@ -378,6 +378,8 @@ bool areParallel(const std::vector<util::Coordinate> &lhs,
                  const std::vector<util::Coordinate> &rhs,
                  const double std_deviation_limit)
 {
+    // needs to consider percentiles, so we don't make errors in the beginning/end due to variations
+    // while splitting the road
     const auto get_std_deviation = [](const std::vector<double> &values) {
         if (values.empty())
             return .0;

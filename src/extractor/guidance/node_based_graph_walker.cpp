@@ -47,7 +47,6 @@ void LengthLimitedCoordinateAccumulator::update(const NodeID from_node,
 
     accumulated_length += length;
     accumulated_length = std::min(length, max_length);
-    std::cout << "Updating: " << length << " for " << coordinates.size() << " coordinates" << std::endl;
 }
 
 // ---------------------------------------------------------------------------------
