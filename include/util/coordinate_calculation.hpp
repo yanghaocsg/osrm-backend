@@ -39,13 +39,20 @@ double getLength(const std::vector<Coordinate> &coordinates, BinaryOperation op)
     if (coordinates.empty())
         return 0.;
 
+    std::cout << "Coordinates:\n";
+    for( auto c : coordinates )
+        std::cout << "\t" << c << std::endl;
+
     double result = 0;
     const auto functor = [&result, op](const Coordinate lhs, const Coordinate rhs) {
         result += op(lhs, rhs);
+        std::cout << "Lu: " << result << std::endl;
         return false;
     };
     // side-effect find adding up distances
     std::adjacent_find(coordinates.begin(), coordinates.end(), functor);
+
+    std::cout << "Length: " << result << std::endl;
 
     return result;
 }

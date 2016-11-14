@@ -32,6 +32,9 @@ IntersectionNormalizer::IntersectionNormalizer(
 Intersection IntersectionNormalizer::operator()(const NodeID node_at_intersection,
                                                 Intersection intersection) const
 {
+    std::cout << "Optimizing\n";
+    for( auto road : intersection )
+        std::cout << "\t" << toString(road) << std::endl;
     return AdjustForJoiningRoads(
         node_at_intersection, MergeSegregatedRoads(node_at_intersection, std::move(intersection)));
 }

@@ -36,7 +36,7 @@ void LengthLimitedCoordinateAccumulator::update(const NodeID from_node,
         coordinate_extractor.GetForwardCoordinatesAlongRoad(from_node, via_edge);
 
     const auto length = util::coordinate_calculation::getLength(
-        coordinates, util::coordinate_calculation::haversineDistance);
+        current_coordinates, util::coordinate_calculation::haversineDistance);
 
     // in case we get too many coordinates, we limit them to our desired length
     if (length + accumulated_length > max_length)
@@ -46,6 +46,8 @@ void LengthLimitedCoordinateAccumulator::update(const NodeID from_node,
     coordinates.insert(coordinates.end(), current_coordinates.begin(), current_coordinates.end());
 
     accumulated_length += length;
+    accumulated_length = std::min(length, max_length);
+    std::cout << "Updating: " << length << " for " << coordinates.size() << " coordinates" << std::endl;
 }
 
 // ---------------------------------------------------------------------------------

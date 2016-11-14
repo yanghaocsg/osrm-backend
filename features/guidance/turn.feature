@@ -278,52 +278,6 @@ Feature: Simple Turns
             | x    | z  | xy,yz,yz | depart,turn right,arrive |
             | z    | x  | yz,xy,xy | depart,turn left,arrive  |
 
-    Scenario: Four Way Intersection Double Through Street Segregated
-        Given the node map
-            """
-                    q   p
-
-
-
-
-                    b   c
-            j     i       d     o
-                      a
-            k     h       e     n
-                    g   f
-
-
-
-
-                    l   m
-            """
-
-        And the ways
-            | nodes  | highway | oneway | name   |
-            | khaij  | primary | yes    | first  |
-            | odaen  | primary | yes    | first  |
-            | qbacp  | primary | yes    | second |
-            | mfagl  | primary | yes    | second |
-
-       When I route I should get
-            | waypoints | route                | turns                        |
-            | f,e       | second,first,first   | depart,turn right,arrive     |
-            | f,c       | second,second        | depart,arrive                |
-            | f,i       | second,first,first   | depart,turn left,arrive      |
-            | f,g       | second,second,second | depart,continue uturn,arrive |
-            | d,c       | first,second,second  | depart,turn right,arrive     |
-            | d,i       | first,first          | depart,arrive                |
-            | d,g       | first,second,second  | depart,turn left,arrive      |
-            | d,e       | first,first,first    | depart,continue uturn,arrive |
-            | b,i       | second,first,first   | depart,turn right,arrive     |
-            | b,g       | second,second        | depart,arrive                |
-            | b,e       | second,first,first   | depart,turn left,arrive      |
-            | b,c       | second,second,second | depart,continue uturn,arrive |
-            | h,g       | first,second,second  | depart,turn right,arrive     |
-            | h,e       | first,first          | depart,arrive                |
-            | h,c       | first,second,second  | depart,turn left,arrive      |
-            | h,i       | first,first,first    | depart,continue uturn,arrive |
-
     Scenario: Three Way Similar Sharp Turns
         Given the node map
             """

@@ -64,6 +64,11 @@ bool MergableRoadDetector::CanMergeRoad(const NodeID intersection_node,
     if (road_target(lhs) == intersection_node || road_target(lhs) == intersection_node)
         return false;
 
+    std::cout << "Comparison:\n"
+              << "\tLink Road: " << IsLinkRoad(intersection_node,lhs) << " " << IsLinkRoad(intersection_node,rhs) << "\n"
+              << "\tTriangls: " << IsNarrowTriangle(intersection_node,lhs,rhs) << "\n"
+              << "\tParallel: " << HaveSameDirection(intersection_node,lhs,rhs) << std::endl;
+
     // Don't merge link roads
     if (IsLinkRoad(intersection_node, lhs) || IsLinkRoad(intersection_node, rhs))
         return false;
@@ -204,6 +209,8 @@ bool MergableRoadDetector::HaveSameDirection(const NodeID intersection_node,
 
     std::tie(distance_traversed_to_the_left, coordinates_to_the_left) =
         getCoordinatesAlongWay(lhs.eid, distance_to_extract);
+
+    std::cout << "Travelled Left: " << distance_traversed_to_the_left << std::endl;
     // quit early if the road is not very long
     if (distance_traversed_to_the_left <= 40)
         return false;
@@ -213,8 +220,10 @@ bool MergableRoadDetector::HaveSameDirection(const NodeID intersection_node,
 
     std::tie(distance_traversed_to_the_right, coordinates_to_the_right) =
         getCoordinatesAlongWay(rhs.eid, distance_to_extract);
+    std::cout << "Travelled Right: " << distance_traversed_to_the_right << std::endl;
     if (distance_traversed_to_the_right <= 40)
         return false;
+
 
     coordinates_to_the_right = coordinate_extractor.SampleCoordinates(
         std::move(coordinates_to_the_right), distance_to_extract, 5);
