@@ -115,6 +115,17 @@ class MergableRoadDetector
                       const ConnectedRoad &lhs,
                       const ConnectedRoad &rhs) const;
 
+    /*
+     * A negative detector, preventing a merge, trying to detect link roads between two main roads.
+     *
+     *  d - - - - - - - - e - f
+     *             . / '
+     *  a - - - b - - - - - - c
+     *
+     * The detector wants to prevent merges that are connected to `b-e`
+     */
+    bool IsLinkRoad( const NodeID intersection_node, const ConnectedRoad &road ) const;
+
     const util::NodeBasedDynamicGraph &node_based_graph;
     const std::vector<QueryNode> &node_coordinates;
     const IntersectionGenerator &intersection_generator;

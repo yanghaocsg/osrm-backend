@@ -123,6 +123,27 @@ Feature: Merge Segregated Roads
             | waypoints | route          | intersections                                          |
             | a,e       | in,merge,merge | true:90;false:75 true:90 false:120 false:270;true:270  |
 
+    Scenario: Tripple Merge should not be possible
+        Given the node map
+            """
+                          . f - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - g
+                        .
+            a - - - - b - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - e
+                        '
+                          ' c - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - d
+            """
+
+        And the ways
+            | nodes | name  | oneway |
+            | ab    | in    | no     |
+            | gfb   | merge | yes    |
+            | eb    | merge | yes    |
+            | bcd   | merge | yes    |
+
+        When I route I should get
+            | waypoints | route          | intersections                                          |
+            | a,d       | in,merge,merge | true:90;false:75 true:90 false:120 false:270;true:270  |
+
     @negative
     Scenario: Don't accept turn-restrictions
         Given the node map

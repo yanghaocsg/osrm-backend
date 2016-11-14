@@ -34,19 +34,19 @@ bool MergableRoadDetector::CanMergeRoad(const NodeID intersection_node,
                                         const ConnectedRoad &lhs,
                                         const ConnectedRoad &rhs) const
 {
+    // mergable roads cannot hide a turn. We are not allowed to remove any of them
+    if (lhs.entry_allowed && rhs.entry_allowed)
+        return false;
+
+    if (angularDeviation(lhs.angle, rhs.angle) > 60)
+        return false;
+
     const auto &lhs_edge_data = node_based_graph.GetEdgeData(lhs.eid);
     const auto &rhs_edge_data = node_based_graph.GetEdgeData(rhs.eid);
 
     // roundabouts are special, simply don't hurt them. We might not want to bear the
     // consequences
     if (lhs_edge_data.roundabout || rhs_edge_data.roundabout)
-        return false;
-
-    // mergable roads cannot hide a turn. We are not allowed to remove any of them
-    if (lhs.entry_allowed && rhs.entry_allowed)
-        return false;
-
-    if (angularDeviation(lhs.angle, rhs.angle) > 60)
         return false;
 
     // and they need to describe the same road
@@ -60,7 +60,12 @@ bool MergableRoadDetector::CanMergeRoad(const NodeID intersection_node,
     const auto road_target = [this](const ConnectedRoad &road) {
         return node_based_graph.GetTarget(road.eid);
     };
+    // TODO might have to skip over trivial intersections
     if (road_target(lhs) == intersection_node || road_target(lhs) == intersection_node)
+        return false;
+
+    // Don't merge link roads
+    if (IsLinkRoad(intersection_node, lhs) || IsLinkRoad(intersection_node, rhs))
         return false;
 
     if (IsNarrowTriangle(intersection_node, lhs, rhs))
@@ -290,6 +295,12 @@ bool MergableRoadDetector::ConnectAgain(const NodeID intersection_node,
 
     return left_candidate == right_candidate && left_candidate != SPECIAL_NODEID &&
            left_candidate != intersection_node;
+}
+
+bool MergableRoadDetector::IsLinkRoad(const NodeID intersection_node,
+                                      const ConnectedRoad &road) const
+{
+    return false;
 }
 
 } // namespace guidance
