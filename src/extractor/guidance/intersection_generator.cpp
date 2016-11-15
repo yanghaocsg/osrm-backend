@@ -88,6 +88,30 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
 
     const auto intersection_lanes = getLaneCountAtIntersection(turn_node, node_based_graph);
 
+    // The first coordinate (the origin) can depend on the number of lanes turning onto,
+    // just as the target coordinate can. Here we compute the corrected coordinate for the
+    // incoming edge.
+    util::Coordinate first_coordinate;
+    double in_segment_length = 0.;
+    std::tie(first_coordinate, in_segment_length) = [&]() {
+        const auto in_coordinates =
+            coordinate_extractor.GetCoordinatesAlongRoad(from_node, via_eid, INVERT, turn_node);
+        const auto length = util::coordinate_calculation::getLength(
+            in_coordinates, util::coordinate_calculation::haversineDistance);
+        return use_low_precision_angles
+                   ? std::make_pair(coordinate_extractor.GetCoordinateCloseToTurn(
+                                        from_node, via_eid, INVERT, turn_node),
+                                    length)
+                   : std::make_pair(coordinate_extractor.ExtractRepresentativeCoordinate(
+                                        from_node,
+                                        via_eid,
+                                        INVERT,
+                                        turn_node,
+                                        intersection_lanes,
+                                        std::move(in_coordinates)),
+                                    length);
+    }();
+
     for (const EdgeID onto_edge : node_based_graph.GetAdjacentEdgeRange(turn_node))
     {
         BOOST_ASSERT(onto_edge != SPECIAL_EDGEID);
@@ -107,17 +131,7 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
             !restriction_map.CheckIfTurnIsRestricted(from_node, turn_node, to_node);
 
         auto angle = 0.;
-        double bearing = 0.;
-
-        // The first coordinate (the origin) can depend on the number of lanes turning onto,
-        // just as the target coordinate can. Here we compute the corrected coordinate for the
-        // incoming edge.
-        const auto first_coordinate =
-            use_low_precision_angles
-                ? coordinate_extractor.GetCoordinateCloseToTurn(
-                      from_node, via_eid, INVERT, turn_node)
-                : coordinate_extractor.GetCoordinateAlongRoad(
-                      from_node, via_eid, INVERT, turn_node, intersection_lanes);
+        double bearing = 0., out_segment_length = 0.;
 
         if (from_node == to_node)
         {
@@ -144,18 +158,32 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
                 }
             }
             has_uturn_edge = true;
+            out_segment_length = in_segment_length;
             BOOST_ASSERT(angle >= 0. && angle < std::numeric_limits<double>::epsilon());
         }
         else
         {
             // the default distance we lookahead on a road. This distance prevents small mapping
             // errors to impact the turn angles.
-            const auto third_coordinate =
-                use_low_precision_angles
-                    ? coordinate_extractor.GetCoordinateCloseToTurn(
-                           turn_node, onto_edge, !INVERT, to_node)
-                    : coordinate_extractor.GetCoordinateAlongRoad(
-                           turn_node, onto_edge, !INVERT, to_node, intersection_lanes);
+            util::Coordinate third_coordinate;
+            std::tie(third_coordinate, out_segment_length) = [&]() {
+                const auto out_coordinates = coordinate_extractor.GetCoordinatesAlongRoad(
+                    turn_node, onto_edge, !INVERT, to_node);
+                const auto length = util::coordinate_calculation::getLength(
+                    out_coordinates, util::coordinate_calculation::haversineDistance);
+                return use_low_precision_angles
+                           ? std::make_pair(coordinate_extractor.GetCoordinateCloseToTurn(
+                                                turn_node, onto_edge, !INVERT, to_node),
+                                            length)
+                           : std::make_pair(coordinate_extractor.ExtractRepresentativeCoordinate(
+                                                turn_node,
+                                                onto_edge,
+                                                !INVERT,
+                                                to_node,
+                                                intersection_lanes,
+                                                std::move(out_coordinates)),
+                                            length);
+            }();
 
             angle = util::coordinate_calculation::computeAngle(
                 first_coordinate, turn_coordinate, third_coordinate);
@@ -171,7 +199,8 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
                                         bearing,
                                         {TurnType::Invalid, DirectionModifier::UTurn},
                                         INVALID_LANE_DATAID},
-                          turn_is_valid));
+                          turn_is_valid,
+                          out_segment_length));
     }
 
     // We hit the case of a street leading into nothing-ness. Since the code here assumes
@@ -179,14 +208,6 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
     // will never happen we add an artificial invalid uturn in this case.
     if (!has_uturn_edge)
     {
-        const auto number_of_lanes =
-            node_based_graph.GetEdgeData(via_eid).road_classification.GetNumberOfLanes();
-        const auto first_coordinate =
-            use_low_precision_angles
-                ? coordinate_extractor.GetCoordinateCloseToTurn(
-                      from_node, via_eid, INVERT, turn_node)
-                : coordinate_extractor.GetCoordinateAlongRoad(
-                      from_node, via_eid, INVERT, turn_node, number_of_lanes);
         const double bearing =
             util::coordinate_calculation::bearing(turn_coordinate, first_coordinate);
 
@@ -195,7 +216,8 @@ Intersection IntersectionGenerator::GetConnectedRoads(const NodeID from_node,
                                               bearing,
                                               {TurnType::Invalid, DirectionModifier::UTurn},
                                               INVALID_LANE_DATAID},
-                                false});
+                                false,
+                                in_segment_length});
     }
 
     std::sort(std::begin(intersection),
@@ -232,41 +254,39 @@ IntersectionGenerator::GetActualNextIntersection(const NodeID starting_node,
                                                  NodeID *resulting_from_node = nullptr,
                                                  EdgeID *resulting_via_edge = nullptr) const
 {
-    // This function skips over traffic lights/graph compression issues and similar to find the next
-    // actual intersection
-    Intersection result = GetConnectedRoads(starting_node, via_edge);
+    NodeID query_node = starting_node;
+    EdgeID query_edge = via_edge;
 
-    // Skip over stuff that has not been compressed due to barriers/parallel edges
-    NodeID node_at_intersection = starting_node;
-    EdgeID incoming_edge = via_edge;
+    const auto get_next_edge = [this](const NodeID from, const EdgeID via) {
+        const NodeID new_node = node_based_graph.GetTarget(via);
+        BOOST_ASSERT(node_based_graph.GetOutDegree(new_node) == 2);
+        const EdgeID begin_edges_new_node = node_based_graph.BeginEdges(new_node);
+        return (node_based_graph.GetTarget(begin_edges_new_node) == from) ? begin_edges_new_node + 1
+                                                                          : begin_edges_new_node;
+    };
 
-    // to prevent endless loops
-    const auto termination_node = node_based_graph.GetTarget(via_edge);
-
-    // using a maximum lookahead, we make sure not to end up in some form of loop
     std::unordered_set<NodeID> visited_nodes;
-    while (visited_nodes.count(node_at_intersection) == 0 &&
-           (result.size() == 2 &&
-            node_based_graph.GetEdgeData(via_edge).IsCompatibleTo(
-                node_based_graph.GetEdgeData(result[1].eid))))
+    while (0 == visited_nodes.count(query_node) &&
+           2 == node_based_graph.GetOutDegree(node_based_graph.GetTarget(query_edge)))
     {
-        visited_nodes.insert(node_at_intersection);
-        node_at_intersection = node_based_graph.GetTarget(incoming_edge);
-        incoming_edge = result[1].eid;
-        result = GetConnectedRoads(node_at_intersection, incoming_edge);
-
-        // When looping back to the original node, we obviously are in a loop. Stop there.
-        if (termination_node == node_based_graph.GetTarget(incoming_edge))
+        visited_nodes.insert(query_node);
+        const auto next_node = node_based_graph.GetTarget(query_edge);
+        const auto next_edge = get_next_edge(query_node, query_edge);
+        if (!node_based_graph.GetEdgeData(query_edge)
+                 .IsCompatibleTo(node_based_graph.GetEdgeData(next_edge)) ||
+            node_based_graph.GetTarget(next_edge) == starting_node)
             break;
+
+        query_node = next_node;
+        query_edge = next_edge;
     }
 
-    // return output if requested
     if (resulting_from_node)
-        *resulting_from_node = node_at_intersection;
+        *resulting_from_node = query_node;
     if (resulting_via_edge)
-        *resulting_via_edge = incoming_edge;
+        *resulting_via_edge = query_edge;
 
-    return result;
+    return GetConnectedRoads(query_edge, via_edge);
 }
 
 const CoordinateExtractor &IntersectionGenerator::GetCoordinateExtractor() const
