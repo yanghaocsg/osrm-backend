@@ -45,6 +45,8 @@ class TurnHandler : public IntersectionHandler
                             Intersection intersection) const override final;
 
   private:
+    struct Fork;
+
     bool isObviousOfTwo(const EdgeID via_edge,
                         const ConnectedRoad &road,
                         const ConnectedRoad &other) const;
@@ -83,8 +85,7 @@ class TurnHandler : public IntersectionHandler
     handleDistinctConflict(const EdgeID via_edge, ConnectedRoad &left, ConnectedRoad &right) const;
 
     // Classification
-    std::pair<std::size_t, std::size_t> findFork(const EdgeID via_edge,
-                                                 const Intersection &intersection) const;
+    Fork findFork(const EdgeID via_edge, const Intersection &intersection) const;
 
     OSRM_ATTR_WARN_UNUSED
     Intersection assignLeftTurns(const EdgeID via_edge,

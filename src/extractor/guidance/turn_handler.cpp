@@ -22,6 +22,30 @@ namespace extractor
 namespace guidance
 {
 
+// @CHAU_TODO
+// a wrapper to handle road indices of forks at intersections
+struct TurnHandler::Fork
+{
+    const std::size_t right;
+    const std::size_t left;
+    const std::size_t size;
+    const bool valid;
+
+    Fork(const std::size_t right, const std::size_t left)
+        : right(right), left(left), size(left - right + 1), valid(true)
+    {
+        BOOST_ASSERT(right < left);
+        BOOST_ASSERT(size >= 2);
+        BOOST_ASSERT(size <= 3);
+    }
+
+    Fork() : right(0), left(0), size(0), valid(false) {}
+
+    static TurnHandler::Fork getEmptyFork() { return Fork(); }
+
+    operator bool() const { return valid; }
+};
+
 TurnHandler::TurnHandler(const util::NodeBasedDynamicGraph &node_based_graph,
                          const std::vector<QueryNode> &node_info_list,
                          const util::NameTable &name_table,
@@ -178,9 +202,10 @@ Intersection TurnHandler::handleThreeWayTurn(const EdgeID via_edge, Intersection
              \
                OOOOOOO
      */
-    const auto fork_range = findFork(via_edge, intersection);
-    if (fork_range.first == 1 && fork_range.second == 2 && obvious_index == 0)
-        assignFork(via_edge, intersection[2], intersection[1]);
+    const auto fork = findFork(via_edge, intersection);
+    // @CHAU_TODO refactor such that findFork returns a fork that does not need to be checked again
+    if (fork && fork.right == 1 && fork.left == 2 && obvious_index == 0)
+        assignFork(via_edge, intersection[fork.left], intersection[fork.right]);
 
     /*  T Intersection
 
@@ -248,8 +273,9 @@ Intersection TurnHandler::handleThreeWayTurn(const EdgeID via_edge, Intersection
 
 Intersection TurnHandler::handleComplexTurn(const EdgeID via_edge, Intersection intersection) const
 {
+    // @CHAU_TODO check whether obvious check here and obvious check in findFork are redundant
     const std::size_t obvious_index = findObviousTurn(via_edge, intersection);
-    const auto fork_range = findFork(via_edge, intersection);
+    const auto fork = findFork(via_edge, intersection);
     std::size_t straightmost_turn = 0;
     double straightmost_deviation = 180;
     for (std::size_t i = 0; i < intersection.size(); ++i)
@@ -275,12 +301,13 @@ Intersection TurnHandler::handleComplexTurn(const EdgeID via_edge, Intersection 
         intersection = assignLeftTurns(via_edge, std::move(intersection), obvious_index + 1);
         intersection = assignRightTurns(via_edge, std::move(intersection), obvious_index);
     }
-    else if (fork_range.first != 0 && fork_range.second - fork_range.first <= 2) // found fork
+    else if (fork && fork.size <= 3) // found fork
     {
-        if (fork_range.second - fork_range.first == 1)
+        auto &right = intersection[fork.right];
+        auto &left = intersection[fork.left];
+
+        if (fork.size == 2)
         {
-            auto &left = intersection[fork_range.second];
-            auto &right = intersection[fork_range.first];
             const auto left_classification =
                 node_based_graph.GetEdgeData(left.eid).road_classification;
             const auto right_classification =
@@ -302,16 +329,17 @@ Intersection TurnHandler::handleComplexTurn(const EdgeID via_edge, Intersection 
                                      DirectionModifier::SlightRight};
             }
         }
-        else if (fork_range.second - fork_range.first == 2)
+        else if (fork.size == 3)
         {
             assignFork(via_edge,
-                       intersection[fork_range.second],
-                       intersection[fork_range.first + 1],
-                       intersection[fork_range.first]);
+                       left,
+                       // middle fork road
+                       intersection[fork.right + 1],
+                       right);
         }
         // assign left/right turns
-        intersection = assignLeftTurns(via_edge, std::move(intersection), fork_range.second + 1);
-        intersection = assignRightTurns(via_edge, std::move(intersection), fork_range.first);
+        intersection = assignLeftTurns(via_edge, std::move(intersection), fork.left + 1);
+        intersection = assignRightTurns(via_edge, std::move(intersection), fork.right);
     }
     else if (straightmost_deviation < FUZZY_ANGLE_DIFFERENCE &&
              !intersection[straightmost_turn].entry_allowed)
@@ -661,8 +689,8 @@ bool TurnHandler::isCompatibleByRoadClass(const Intersection &intersection,
 
 // Checks whether a three-way-intersection coming from `via_edge` is a fork
 // with `intersection` as described as in #IntersectionExplanation@intersection_handler.hpp
-std::pair<std::size_t, std::size_t> TurnHandler::findFork(const EdgeID via_edge,
-                                                          const Intersection &intersection) const
+TurnHandler::Fork TurnHandler::findFork(const EdgeID via_edge,
+                                        const Intersection &intersection) const
 {
     std::size_t right;
     std::size_t left;
@@ -673,7 +701,7 @@ std::pair<std::size_t, std::size_t> TurnHandler::findFork(const EdgeID via_edge,
     // they cannot be fork candidates
     if ((left == right) || ((left - right + 1) > 3))
     {
-        return std::make_pair(std::size_t{0}, std::size_t{0});
+        return Fork::getEmptyFork();
     }
 
     BOOST_ASSERT(0 < right);
@@ -702,10 +730,10 @@ std::pair<std::size_t, std::size_t> TurnHandler::findFork(const EdgeID via_edge,
     if (separated_at_left_side && separated_at_right_side && !has_obvious &&
         has_compatible_classes && only_valid_entries)
     {
-        return std::make_pair(right, left);
+        return Fork(right, left);
     }
 
-    return std::make_pair(std::size_t{0}, std::size_t{0});
+    return Fork::getEmptyFork();
 }
 
 void TurnHandler::handleDistinctConflict(const EdgeID via_edge,
