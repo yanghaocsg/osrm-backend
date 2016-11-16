@@ -11,6 +11,7 @@
 #include "extractor/raster_source.hpp"
 #include "util/graph_loader.hpp"
 #include "util/io.hpp"
+#include "storage/io.hpp"
 #include "util/name_table.hpp"
 #include "util/range_table.hpp"
 #include "util/simple_logger.hpp"
