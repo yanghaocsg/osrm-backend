@@ -42,7 +42,7 @@ inline unsigned loadRestrictionsFromFile(storage::io::FileReader& file_reader,
     if (number_of_usable_restrictions > 0) {
         file_reader.ReadInto(restriction_list.data(), number_of_usable_restrictions);
     }
-
+    
     return number_of_usable_restrictions;
 }
 
