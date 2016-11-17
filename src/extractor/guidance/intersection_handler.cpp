@@ -507,11 +507,11 @@ std::size_t IntersectionHandler::findObviousTurn(const EdgeID via_edge,
     // get a count of number of ways from that intersection that qualify to have
     // continue instruction because they share a name with the approaching way
     std::int64_t continue_count =
-        count_if(begin(intersection), end(intersection), [&](const ConnectedRoad &way) {
+        count_if(++begin(intersection), end(intersection), [&](const ConnectedRoad &way) {
             return IsContinueRoad(node_based_graph.GetEdgeData(way.eid));
         });
     std::int64_t continue_count_valid =
-        count_if(begin(intersection), end(intersection), [&](const ConnectedRoad &way) {
+        count_if(++begin(intersection), end(intersection), [&](const ConnectedRoad &way) {
             return IsContinueRoad(node_based_graph.GetEdgeData(way.eid)) && way.entry_allowed;
         });
 
