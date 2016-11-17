@@ -54,20 +54,16 @@ std::size_t loadGraph(const char *path,
                       std::vector<extractor::QueryNode> &coordinate_list,
                       std::vector<TarjanEdge> &graph_edge_list)
 {
-    std::ifstream stream(path, std::ifstream::binary);
-    if (!stream)
-    {
-        throw util::exception("Cannot open osrm file");
-    }
+    storage::io::FileReader file_reader(path, storage::io::FileReader::VerifyFingerprint);
 
     // load graph data
     std::vector<extractor::NodeBasedEdge> edge_list;
 
     auto nop = boost::make_function_output_iterator([](auto) {});
 
-    auto number_of_nodes = util::loadNodesFromFile(stream, nop, nop, coordinate_list);
+    auto number_of_nodes = util::loadNodesFromFile(file_reader, nop, nop, coordinate_list);
 
-    util::loadEdgesFromFile(stream, edge_list);
+    util::loadEdgesFromFile(file_reader, edge_list);
 
     // Building an node-based graph
     for (const auto &input_edge : edge_list)
